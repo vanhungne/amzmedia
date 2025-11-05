@@ -438,6 +438,82 @@ class WorkFlowAPIClient:
         except Exception as e:
             print(f"❌ API Error: {e}")
             return False
+    
+    def get_gemini_keys(self) -> List[Dict]:
+        """
+        Get Gemini API keys assigned to current user from server
+        Returns list of active Gemini keys
+        """
+        if not self.token:
+            print("❌ Not authenticated. Call authenticate() first.")
+            return []
+        
+        try:
+            response = requests.get(
+                f"{self.base_url}/api/tool/gemini",
+                headers={"Authorization": f"Bearer {self.token}"},
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('success'):
+                    gemini_keys = data.get('keys', [])
+                    print(f"✅ Loaded {len(gemini_keys)} Gemini API keys from server")
+                    
+                    # Log activity
+                    self.log_activity(
+                        action='load_gemini_keys',
+                        category='api',
+                        details={'key_count': len(gemini_keys)},
+                        status='success'
+                    )
+                    
+                    return gemini_keys
+            
+            print(f"❌ Failed to get Gemini keys: {response.json().get('error', 'Unknown error')}")
+            return []
+            
+        except Exception as e:
+            print(f"❌ API Error: {e}")
+            return []
+    
+    def report_gemini_status(self, key_id: int, status: str, error_message: str = None) -> bool:
+        """
+        Report Gemini key status to server (auto-report dead/error keys)
+        
+        Args:
+            key_id: Gemini key ID
+            status: 'active' or 'dead'
+            error_message: Optional error message
+        
+        Returns:
+            True if reported successfully, False otherwise
+        """
+        if not self.token:
+            return False
+        
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/tool/gemini",
+                headers={"Authorization": f"Bearer {self.token}"},
+                json={
+                    "key_id": key_id,
+                    "status": status,
+                    "error_message": error_message
+                },
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                print(f"✅ Gemini key status reported: {status}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            print(f"❌ Error reporting Gemini key status: {e}")
+            return False
 
 
 # Example Usage
