@@ -1,9 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('image', 'image')]
+datas = []
 binaries = []
-hiddenimports = ['PIL', 'PIL.Image', 'requests', 'cryptography', 'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets', 'PySide6.QtMultimedia', 'PySide6.QtMultimediaWidgets']
+hiddenimports = ['requests', 'cryptography', 'PIL', 'PIL.Image']
 tmp_ret = collect_all('PySide6')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
