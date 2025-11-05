@@ -4,7 +4,8 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { login } from '@/lib/api';
-import { Lock, User, ArrowRight, AlertCircle } from 'lucide-react';
+import { Lock, User, ArrowRight, AlertCircle, Sparkles } from 'lucide-react';
+import SpaceBackground from '@/components/SpaceBackground';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -29,21 +30,27 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-600 via-primary-500 to-red-500 relative overflow-hidden">
-      {/* Decorative Background Elements */}
-      <div className="absolute inset-0 overflow-hidden">
-        <div className="absolute -top-40 -right-40 w-80 h-80 bg-white/10 rounded-full blur-3xl"></div>
-        <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-red-700/20 rounded-full blur-3xl"></div>
-        <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-white/5 rounded-full blur-3xl"></div>
-      </div>
+    <div className="min-h-screen flex items-center justify-center relative overflow-hidden">
+      {/* Space Background */}
+      <SpaceBackground />
 
       {/* Login Card */}
       <div className="relative z-10 w-full max-w-md mx-4">
-        <div className="bg-white rounded-3xl shadow-2xl p-10 backdrop-blur-xl border border-gray-100">
+        <div className="rounded-3xl shadow-2xl p-10 border border-white/30" style={{
+          background: 'rgba(255, 255, 255, 0.95)',
+          backdropFilter: 'blur(20px)',
+          boxShadow: '0 0 80px rgba(102, 126, 234, 0.5), 0 0 120px rgba(118, 75, 162, 0.3)'
+        }}>
           {/* Logo & Brand */}
           <div className="text-center mb-8">
-            <div className="flex justify-center mb-6">
-              <div className="relative w-20 h-20 bg-gradient-to-br from-primary-500 to-red-600 rounded-2xl shadow-xl p-2">
+            <div className="flex justify-center mb-6 relative">
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="w-28 h-28 bg-gradient-to-br from-purple-400 to-pink-400 rounded-full blur-2xl opacity-60 animate-pulse"></div>
+              </div>
+              <div className="relative w-20 h-20 rounded-2xl shadow-xl p-2 animate-pulse" style={{
+                background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                boxShadow: '0 0 40px rgba(102, 126, 234, 0.6), 0 0 80px rgba(118, 75, 162, 0.4)'
+              }}>
                 <Image 
                   src="/logo.jpg" 
                   alt="Logo" 
@@ -53,18 +60,24 @@ export default function LoginPage() {
                 />
               </div>
             </div>
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-primary-600 to-red-600 bg-clip-text text-transparent mb-2">
+            <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-600 via-blue-600 to-pink-600 bg-clip-text text-transparent mb-2 flex items-center justify-center gap-2" style={{
+              filter: 'drop-shadow(0 0 20px rgba(147, 51, 234, 0.3))'
+            }}>
+              <Sparkles className="w-8 h-8 text-purple-500 animate-pulse" />
               WorkFlow Admin
             </h1>
-            <p className="text-gray-600 font-medium">Hệ thống quản lý tập trung</p>
+            <p className="text-gray-700 font-bold">Hệ thống quản lý tập trung</p>
           </div>
 
           {/* Login Form */}
           <form onSubmit={handleSubmit} className="space-y-6">
             {error && (
-              <div className="bg-red-50 border-2 border-red-200 text-red-700 px-4 py-3 rounded-xl flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 mt-0.5 flex-shrink-0" />
-                <span className="text-sm font-medium">{error}</span>
+              <div className="px-4 py-3 rounded-xl flex items-start gap-3 border border-red-300" style={{
+                background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.1) 0%, rgba(220, 38, 38, 0.1) 100%)',
+                backdropFilter: 'blur(10px)'
+              }}>
+                <AlertCircle className="w-5 h-5 mt-0.5 flex-shrink-0 text-red-600" />
+                <span className="text-sm font-bold text-red-700">{error}</span>
               </div>
             )}
 
@@ -112,25 +125,25 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="btn btn-primary w-full text-lg py-4 group"
+              className="btn btn-primary w-full text-lg py-4 group relative"
             >
               {loading ? (
                 <>
-                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  <span>Đang đăng nhập...</span>
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin relative z-10"></div>
+                  <span className="relative z-10">Đang đăng nhập...</span>
                 </>
               ) : (
                 <>
-                  <span>Đăng nhập</span>
-                  <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+                  <span className="relative z-10">Đăng nhập</span>
+                  <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform relative z-10" />
                 </>
               )}
             </button>
           </form>
 
           {/* Footer */}
-          <div className="mt-8 pt-6 border-t border-gray-200 text-center">
-            <p className="text-sm text-gray-500">
+          <div className="mt-8 pt-6 border-t border-purple-100 text-center">
+            <p className="text-sm text-gray-600 font-medium">
               © 2025 WorkFlow Admin. All rights reserved.
             </p>
           </div>
@@ -138,8 +151,14 @@ export default function LoginPage() {
 
         {/* Security Badge */}
         <div className="mt-6 flex justify-center">
-          <div className="bg-white/10 backdrop-blur-md px-6 py-3 rounded-full border border-white/20">
-            <p className="text-white text-sm font-medium flex items-center gap-2">
+          <div className="px-6 py-3 rounded-full border border-white/30" style={{
+            background: 'rgba(255, 255, 255, 0.2)',
+            backdropFilter: 'blur(10px)',
+            boxShadow: '0 4px 16px rgba(102, 126, 234, 0.2)'
+          }}>
+            <p className="text-white text-sm font-bold flex items-center gap-2" style={{
+              textShadow: '0 0 10px rgba(0, 0, 0, 0.3)'
+            }}>
               <Lock className="w-4 h-4" />
               Bảo mật với SSL/TLS Encryption
             </p>
