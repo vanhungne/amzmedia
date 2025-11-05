@@ -6,6 +6,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { logout, getCurrentUser } from '@/lib/api';
 import { User, Settings, Users, FolderOpen, LogOut, Key, Network, ChevronRight, Activity, Image as ImageIcon } from 'lucide-react';
+import SpaceBackground from './SpaceBackground';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -56,14 +57,23 @@ export default function Layout({ children }: LayoutProps) {
   ];
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-red-50">
-      {/* Modern Header with Red Gradient */}
-      <header className="bg-gradient-to-r from-primary-600 via-primary-500 to-red-500 shadow-elevated border-b border-red-600">
+    <div className="min-h-screen relative">
+      {/* Space Background with Stars */}
+      <SpaceBackground />
+      
+      {/* Modern Header with Space Gradient */}
+      <header className="relative z-10 shadow-elevated border-b border-white/20" style={{
+        background: 'linear-gradient(135deg, rgba(102, 126, 234, 0.95) 0%, rgba(118, 75, 162, 0.95) 50%, rgba(240, 147, 251, 0.95) 100%)',
+        backdropFilter: 'blur(20px)',
+        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.2), 0 0 80px rgba(102, 126, 234, 0.3)'
+      }}>
         <div className="max-w-7xl mx-auto px-6 lg:px-8">
           <div className="flex justify-between items-center h-20">
             {/* Logo & Brand */}
             <div className="flex items-center space-x-4">
-              <div className="relative w-12 h-12 bg-white rounded-xl shadow-md p-1">
+              <div className="relative w-12 h-12 bg-white rounded-xl p-1 animate-pulse" style={{
+                boxShadow: '0 0 30px rgba(255, 255, 255, 0.5), 0 0 60px rgba(147, 197, 253, 0.3)'
+              }}>
                 <Image 
                   src="/logo.jpg" 
                   alt="Logo" 
@@ -73,27 +83,49 @@ export default function Layout({ children }: LayoutProps) {
                 />
               </div>
               <div>
-                <h1 className="text-2xl font-bold text-white tracking-tight">WorkFlow Admin</h1>
-                <p className="text-red-100 text-xs font-medium">Management System</p>
+                <h1 className="text-2xl font-bold text-white tracking-tight" style={{
+                  textShadow: '0 0 20px rgba(255, 255, 255, 0.5), 0 0 40px rgba(147, 197, 253, 0.3)'
+                }}>
+                  WorkFlow Admin
+                </h1>
+                <p className="text-white/90 text-xs font-medium flex items-center gap-2">
+                  <span className="inline-block w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+                  Management System
+                </p>
               </div>
             </div>
             
             {/* User Info & Logout */}
             <div className="flex items-center space-x-4">
-              <div className="flex items-center space-x-3 bg-white/10 backdrop-blur-sm px-4 py-2 rounded-xl border border-white/20">
-                <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center">
-                  <User className="w-4 h-4 text-primary-600" />
+              <div className="flex items-center space-x-3 px-4 py-2 rounded-xl border border-white/30 transition-all duration-300 hover:border-white/50" style={{
+                background: 'rgba(255, 255, 255, 0.15)',
+                backdropFilter: 'blur(10px)',
+                boxShadow: '0 4px 16px rgba(0, 0, 0, 0.1)'
+              }}>
+                <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center animate-pulse" style={{
+                  boxShadow: '0 0 20px rgba(255, 255, 255, 0.4)'
+                }}>
+                  <User className="w-4 h-4 text-purple-600" />
                 </div>
                 <div className="text-left">
                   <p className="text-sm font-semibold text-white">{user?.username}</p>
-                  <span className="text-xs bg-white/20 text-white px-2 py-0.5 rounded-full uppercase tracking-wider font-bold">
+                  <span className="text-xs px-2 py-0.5 rounded-full uppercase tracking-wider font-bold" style={{
+                    background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0.1))',
+                    color: 'white',
+                    boxShadow: '0 0 10px rgba(255, 255, 255, 0.2)'
+                  }}>
                     {user?.role}
                   </span>
                 </div>
               </div>
               <button
                 onClick={handleLogout}
-                className="flex items-center space-x-2 bg-white/10 hover:bg-white/20 backdrop-blur-sm text-white px-4 py-2 rounded-xl transition-all duration-300 border border-white/20"
+                className="flex items-center space-x-2 text-white px-4 py-2 rounded-xl transition-all duration-300 border border-white/30 hover:border-white/50 hover:scale-105"
+                style={{
+                  background: 'rgba(255, 255, 255, 0.15)',
+                  backdropFilter: 'blur(10px)',
+                  boxShadow: '0 4px 16px rgba(0, 0, 0, 0.1)'
+                }}
               >
                 <LogOut className="w-4 h-4" />
                 <span className="font-medium">Đăng xuất</span>
@@ -103,7 +135,7 @@ export default function Layout({ children }: LayoutProps) {
         </div>
       </header>
 
-      <div className="flex max-w-7xl mx-auto">
+      <div className="flex max-w-7xl mx-auto relative z-10">
         {/* Modern Sidebar */}
         <aside className="w-72 min-h-[calc(100vh-5rem)] p-6">
           <nav className="space-y-2">
@@ -115,10 +147,16 @@ export default function Layout({ children }: LayoutProps) {
                   key={item.href}
                   href={item.href}
                   className={`group flex items-center justify-between px-5 py-4 rounded-2xl transition-all duration-300 ${
-                    isActive
-                      ? 'bg-gradient-to-r from-primary-500 to-red-500 text-white shadow-lg scale-[1.02]'
-                      : 'bg-white hover:bg-red-50 text-gray-700 hover:text-primary-600 shadow-sm hover:shadow-md border border-gray-100'
+                    isActive ? 'text-white shadow-lg scale-[1.02]' : 'text-gray-700 shadow-sm hover:shadow-md'
                   }`}
+                  style={isActive ? {
+                    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                    boxShadow: '0 8px 32px rgba(102, 126, 234, 0.4), 0 0 40px rgba(118, 75, 162, 0.3)'
+                  } : {
+                    background: 'rgba(255, 255, 255, 0.9)',
+                    backdropFilter: 'blur(10px)',
+                    border: '1px solid rgba(255, 255, 255, 0.5)'
+                  }}
                 >
                   <div className="flex items-center space-x-4">
                     <div className={`p-2 rounded-xl ${

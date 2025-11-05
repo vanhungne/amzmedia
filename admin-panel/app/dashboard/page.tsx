@@ -1,9 +1,10 @@
 'use client';
 
 import Layout from '@/components/Layout';
+import SpaceLoader from '@/components/SpaceLoader';
 import { getProjects, getUsers } from '@/lib/api';
 import { useEffect, useState } from 'react';
-import { FolderOpen, Users, Activity } from 'lucide-react';
+import { FolderOpen, Users, Activity, Sparkles, TrendingUp } from 'lucide-react';
 
 export default function DashboardPage() {
   const [stats, setStats] = useState({

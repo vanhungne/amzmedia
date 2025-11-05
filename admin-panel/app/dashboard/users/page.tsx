@@ -1,9 +1,10 @@
 'use client';
 
 import Layout from '@/components/Layout';
+import SpaceLoader from '@/components/SpaceLoader';
 import { useState, useEffect } from 'react';
 import { getUsers, createUser, updateUser, deleteUser, type User } from '@/lib/api';
-import { Plus, Edit, Trash2, X, CheckCircle, XCircle, Smartphone, RefreshCw, Users } from 'lucide-react';
+import { Plus, Edit, Trash2, X, CheckCircle, XCircle, Smartphone, RefreshCw, Users, Sparkles } from 'lucide-react';
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
@@ -121,33 +122,36 @@ export default function UsersPage() {
   return (
     <Layout>
       <div>
-        {/* Header with Gradient */}
+        {/* Header with Space Gradient */}
         <div className="flex justify-between items-center mb-8">
-          <div>
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-primary-600 to-red-600 bg-clip-text text-transparent mb-2">
+          <div className="relative">
+            <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-600 via-blue-600 to-pink-600 bg-clip-text text-transparent mb-2 flex items-center gap-3" style={{
+              filter: 'drop-shadow(0 0 20px rgba(147, 51, 234, 0.3))'
+            }}>
+              <Sparkles className="w-10 h-10 text-purple-500 animate-pulse" />
               Users Management
             </h1>
-            <p className="text-gray-600">Quản lý người dùng và phân quyền</p>
+            <p className="text-gray-700 font-medium">Quản lý người dùng và phân quyền</p>
           </div>
-          <button onClick={handleCreate} className="btn btn-primary">
-            <Plus className="w-5 h-5" />
-            <span>Tạo User Mới</span>
+          <button onClick={handleCreate} className="btn btn-primary relative z-10">
+            <Plus className="w-5 h-5 relative z-10" />
+            <span className="relative z-10">Tạo User Mới</span>
           </button>
         </div>
 
         {loading ? (
-          <div className="card text-center py-16">
-            <div className="relative w-16 h-16 mx-auto mb-4">
-              <div className="absolute inset-0 border-4 border-red-200 rounded-full"></div>
-              <div className="absolute inset-0 border-4 border-primary-600 rounded-full border-t-transparent animate-spin"></div>
-            </div>
-            <p className="text-gray-600 font-medium">Đang tải...</p>
-          </div>
+          <SpaceLoader message="Đang tải danh sách users..." />
         ) : users.length === 0 ? (
-          <div className="card text-center py-16">
-            <Users className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-            <p className="text-gray-600 font-medium text-lg">Chưa có user nào</p>
-            <p className="text-gray-500 text-sm mt-2">Hãy tạo user đầu tiên</p>
+          <div className="card text-center py-16 relative overflow-hidden">
+            <div className="absolute inset-0 opacity-20">
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 bg-purple-400 rounded-full blur-3xl animate-pulse"></div>
+            </div>
+            <Users className="w-16 h-16 mx-auto mb-4 relative z-10" style={{
+              color: '#667eea',
+              filter: 'drop-shadow(0 0 20px rgba(102, 126, 234, 0.5))'
+            }} />
+            <p className="text-gray-700 font-bold text-lg relative z-10">Chưa có user nào</p>
+            <p className="text-gray-600 text-sm mt-2 relative z-10">Hãy tạo user đầu tiên</p>
           </div>
         ) : (
           <div className="card overflow-hidden">
@@ -294,15 +298,27 @@ export default function UsersPage() {
           </div>
         )}
 
-        {/* Modal */}
+        {/* Modal with Space Theme */}
         {showModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4">
-              <div className="flex justify-between items-center p-6 border-b">
-                <h2 className="text-xl font-bold">
+          <div className="fixed inset-0 flex items-center justify-center z-50" style={{
+            background: 'rgba(0, 0, 0, 0.7)',
+            backdropFilter: 'blur(8px)'
+          }}>
+            <div className="rounded-2xl shadow-2xl max-w-lg w-full mx-4 border border-white/30" style={{
+              background: 'rgba(255, 255, 255, 0.98)',
+              backdropFilter: 'blur(20px)',
+              boxShadow: '0 0 80px rgba(102, 126, 234, 0.5), 0 0 120px rgba(118, 75, 162, 0.3)'
+            }}>
+              <div className="flex justify-between items-center p-6 border-b border-purple-100" style={{
+                background: 'linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%)'
+              }}>
+                <h2 className="text-xl font-bold bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">
                   {editingUser ? 'Chỉnh Sửa User' : 'Tạo User Mới'}
                 </h2>
-                <button onClick={() => setShowModal(false)} className="text-gray-400 hover:text-gray-600">
+                <button 
+                  onClick={() => setShowModal(false)} 
+                  className="text-gray-400 hover:text-purple-600 transition-all duration-300 hover:rotate-90 hover:scale-110"
+                >
                   <X className="w-6 h-6" />
                 </button>
               </div>
@@ -374,11 +390,11 @@ export default function UsersPage() {
                 </div>
 
                 <div className="flex justify-end space-x-3 pt-4">
-                  <button type="button" onClick={() => setShowModal(false)} className="btn btn-secondary">
-                    Hủy
+                  <button type="button" onClick={() => setShowModal(false)} className="btn btn-secondary relative z-10">
+                    <span className="relative z-10">Hủy</span>
                   </button>
-                  <button type="submit" className="btn btn-primary">
-                    {editingUser ? 'Cập Nhật' : 'Tạo User'}
+                  <button type="submit" className="btn btn-primary relative">
+                    <span className="relative z-10">{editingUser ? 'Cập Nhật' : 'Tạo User'}</span>
                   </button>
                 </div>
               </form>
