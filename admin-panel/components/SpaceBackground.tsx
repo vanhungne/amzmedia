@@ -1,16 +1,36 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export default function SpaceBackground() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
+    // Delay loading to allow page to render first
+    const loadTimeout = setTimeout(() => {
+      setIsLoaded(true);
+    }, 100);
+
+    return () => clearTimeout(loadTimeout);
+  }, []);
+
+  useEffect(() => {
+    if (!isLoaded) return;
+    
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    
+    let isActive = true;
+    
+    // Pause animation when tab is not visible
+    const handleVisibilityChange = () => {
+      isActive = !document.hidden;
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     // Set canvas size
     const resizeCanvas = () => {
@@ -32,7 +52,7 @@ export default function SpaceBackground() {
     }
 
     const stars: Star[] = [];
-    const numStars = 150;
+    const numStars = 80; // Giảm từ 150 xuống 80 để tối ưu performance
 
     // Create stars
     for (let i = 0; i < numStars; i++) {
@@ -72,14 +92,32 @@ export default function SpaceBackground() {
 
     // Create shooting star occasionally
     const shootingStarInterval = setInterval(() => {
-      if (Math.random() > 0.7) {
+      if (Math.random() > 0.8) { // Giảm tần suất shooting stars
         createShootingStar();
       }
-    }, 3000);
+    }, 4000); // Tăng interval từ 3s lên 4s
 
-    // Animation
+    // Animation với throttling
     let animationFrameId: number;
-    const animate = () => {
+    let lastFrameTime = 0;
+    const targetFPS = 30; // Giới hạn ở 30 FPS thay vì 60 FPS
+    const frameInterval = 1000 / targetFPS;
+    
+    const animate = (currentTime: number = 0) => {
+      // Skip animation if tab is not active
+      if (!isActive) {
+        animationFrameId = requestAnimationFrame(animate);
+        return;
+      }
+      
+      const elapsed = currentTime - lastFrameTime;
+      
+      if (elapsed < frameInterval) {
+        animationFrameId = requestAnimationFrame(animate);
+        return;
+      }
+      
+      lastFrameTime = currentTime - (elapsed % frameInterval);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       // Draw stars
@@ -153,17 +191,23 @@ export default function SpaceBackground() {
     animate();
 
     return () => {
+      isActive = false;
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('resize', resizeCanvas);
       cancelAnimationFrame(animationFrameId);
       clearInterval(shootingStarInterval);
     };
-  }, []);
+  }, [isLoaded]);
 
   return (
     <canvas
       ref={canvasRef}
       className="fixed inset-0 pointer-events-none"
-      style={{ zIndex: 1 }}
+      style={{ 
+        zIndex: 1,
+        opacity: isLoaded ? 1 : 0,
+        transition: 'opacity 0.5s ease-in-out'
+      }}
     />
   );
 }

@@ -8,9 +8,10 @@
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
     background: linear-gradient(135deg, #667eea 0%, #764ba2 25%, #f093fb 50%, #4facfe 75%, #00f2fe 100%);
     background-size: 400% 400%;
-    animation: gradientShift 15s ease infinite;
+    animation: gradientShift 20s ease infinite;
     position: relative;
     overflow-x: hidden;
+    will-change: background-position;
   }
   
   body::before {
@@ -65,8 +66,9 @@
     background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
     background-size: 200% 200%;
     @apply text-white shadow-lg hover:shadow-2xl hover:-translate-y-1;
-    animation: gradientFlow 3s ease infinite;
+    animation: gradientFlow 4s ease infinite;
     box-shadow: 0 8px 32px rgba(102, 126, 234, 0.4);
+    will-change: transform, box-shadow;
   }
   
   .btn-primary:hover:not(:disabled) {

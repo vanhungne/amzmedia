@@ -43,50 +43,46 @@ class LoginDialog(QDialog):
     def setup_ui(self):
         """Setup login dialog UI"""
         self.setWindowTitle("WorkFlow - Đăng nhập")
-        self.setFixedSize(420, 400)
+        self.setFixedSize(500, 580)
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         
-        # Set dialog background color
+        # Set dialog with gradient background
         self.setStyleSheet("""
             QDialog {
-                background-color: #f5f6fa;
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #667eea,
+                    stop:1 #764ba2
+                );
             }
         """)
         
         layout = QVBoxLayout()
-        layout.setSpacing(12)
-        layout.setContentsMargins(40, 40, 40, 40)
+        layout.setSpacing(18)
+        layout.setContentsMargins(50, 50, 50, 50)
         
         # Title with icon
-        title = QLabel("WorkFlow Tool")
+        title = QLabel("AMZ Work Tool")
         title.setStyleSheet("""
-            font-size: 32px; 
+            font-size: 36px; 
             font-weight: bold; 
-            color: #1a1a1a;
-            margin-bottom: 8px;
-            letter-spacing: 1px;
+            color: #ffffff;
+            margin-bottom: 10px;
+            letter-spacing: 2px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
         """)
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
         
-        subtitle = QLabel("Vui lòng đăng nhập để tiếp tục")
-        subtitle.setStyleSheet("""
-            font-size: 14px; 
-            color: #666666;
-            margin-bottom: 25px;
-        """)
-        subtitle.setAlignment(Qt.AlignCenter)
-        layout.addWidget(subtitle)
-        
-        layout.addSpacing(10)
-        
+
         # Username
         username_label = QLabel("Username:")
         username_label.setStyleSheet("""
-            font-weight: bold;
-            font-size: 13px;
-            color: #2c3e50;
-            margin-bottom: 5px;
+            font-weight: 600;
+            font-size: 14px;
+            color: #ffffff;
+            margin-bottom: 8px;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.2);
         """)
         layout.addWidget(username_label)
         
@@ -94,33 +90,38 @@ class LoginDialog(QDialog):
         self.username_input.setPlaceholderText("Nhập username của bạn")
         self.username_input.setStyleSheet("""
             QLineEdit {
-                padding: 12px 15px;
-                border: 2px solid #e0e0e0;
-                border-radius: 8px;
-                font-size: 14px;
-                background-color: white;
-                color: #1a1a1a;
-                min-height: 22px;
+                padding: 16px 18px;
+                border: none;
+                border-radius: 10px;
+                font-size: 15px;
+                background-color: rgba(255, 255, 255, 0.95);
+                color: #2c3e50;
+                min-height: 26px;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
             }
             QLineEdit:focus {
-                border: 2px solid #3498db;
                 background-color: #ffffff;
+                border: 2px solid rgba(255, 255, 255, 0.5);
             }
             QLineEdit:hover {
-                border: 2px solid #bdbdbd;
+                background-color: #ffffff;
+            }
+            QLineEdit::placeholder {
+                color: rgba(44, 62, 80, 0.5);
             }
         """)
         layout.addWidget(self.username_input)
         
-        layout.addSpacing(8)
+        layout.addSpacing(20)
         
         # Password
         password_label = QLabel("Password:")
         password_label.setStyleSheet("""
-            font-weight: bold;
-            font-size: 13px;
-            color: #2c3e50;
-            margin-bottom: 5px;
+            font-weight: 600;
+            font-size: 14px;
+            color: #ffffff;
+            margin-bottom: 8px;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.2);
         """)
         layout.addWidget(password_label)
         
@@ -129,79 +130,103 @@ class LoginDialog(QDialog):
         self.password_input.setEchoMode(QLineEdit.Password)
         self.password_input.setStyleSheet("""
             QLineEdit {
-                padding: 12px 15px;
-                border: 2px solid #e0e0e0;
-                border-radius: 8px;
-                font-size: 14px;
-                background-color: white;
-                color: #1a1a1a;
-                min-height: 22px;
+                padding: 16px 18px;
+                border: none;
+                border-radius: 10px;
+                font-size: 15px;
+                background-color: rgba(255, 255, 255, 0.95);
+                color: #2c3e50;
+                min-height: 26px;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
             }
             QLineEdit:focus {
-                border: 2px solid #3498db;
                 background-color: #ffffff;
+                border: 2px solid rgba(255, 255, 255, 0.5);
             }
             QLineEdit:hover {
-                border: 2px solid #bdbdbd;
+                background-color: #ffffff;
+            }
+            QLineEdit::placeholder {
+                color: rgba(44, 62, 80, 0.5);
             }
         """)
         self.password_input.returnPressed.connect(self.on_login)
         layout.addWidget(self.password_input)
         
-        layout.addSpacing(5)
+        layout.addSpacing(15)
         
         # Remember me checkbox
         self.remember_checkbox = QCheckBox("Ghi nhớ đăng nhập")
         self.remember_checkbox.setStyleSheet("""
             QCheckBox {
-                font-size: 12px;
-                color: #2c3e50;
-                spacing: 8px;
+                font-size: 14px;
+                color: #ffffff;
+                spacing: 10px;
+                padding: 8px 0;
+                font-weight: 500;
             }
             QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border: 2px solid #bdc3c7;
-                border-radius: 3px;
-                background-color: white;
+                width: 20px;
+                height: 20px;
+                border: 2px solid rgba(255, 255, 255, 0.7);
+                border-radius: 5px;
+                background-color: rgba(255, 255, 255, 0.2);
             }
             QCheckBox::indicator:checked {
-                background-color: #3498db;
-                border: 2px solid #3498db;
+                background-color: rgba(255, 255, 255, 0.9);
+                border: 2px solid rgba(255, 255, 255, 1);
+                image: url(none);
             }
             QCheckBox::indicator:hover {
-                border: 2px solid #3498db;
+                border: 2px solid rgba(255, 255, 255, 1);
+                background-color: rgba(255, 255, 255, 0.3);
             }
         """)
         layout.addWidget(self.remember_checkbox)
         
-        layout.addSpacing(15)
+        layout.addSpacing(25)
         
         # Buttons
         button_layout = QHBoxLayout()
-        button_layout.setSpacing(10)
+        button_layout.setSpacing(15)
         
         self.login_button = QPushButton("Đăng nhập")
         self.login_button.setCursor(Qt.PointingHandCursor)
         self.login_button.setStyleSheet("""
             QPushButton {
-                background-color: #3498db;
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #56CCF2,
+                    stop:1 #2F80ED
+                );
                 color: white;
-                padding: 13px 24px;
+                padding: 16px 32px;
                 border: none;
-                border-radius: 8px;
-                font-size: 15px;
+                border-radius: 10px;
+                font-size: 16px;
                 font-weight: bold;
-                min-height: 22px;
+                min-height: 28px;
+                box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
             }
             QPushButton:hover {
-                background-color: #2980b9;
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #4BB8DD,
+                    stop:1 #2868D8
+                );
+                box-shadow: 0 6px 12px rgba(0, 0, 0, 0.3);
             }
             QPushButton:pressed {
-                background-color: #21618c;
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #3FA4C9,
+                    stop:1 #1E50BE
+                );
+                padding-top: 17px;
+                padding-bottom: 15px;
             }
             QPushButton:disabled {
-                background-color: #bdc3c7;
+                background-color: rgba(189, 195, 199, 0.5);
             }
         """)
         self.login_button.clicked.connect(self.on_login)
@@ -211,20 +236,23 @@ class LoginDialog(QDialog):
         self.cancel_button.setCursor(Qt.PointingHandCursor)
         self.cancel_button.setStyleSheet("""
             QPushButton {
-                background-color: #e0e0e0;
-                color: #555555;
-                padding: 13px 24px;
-                border: none;
-                border-radius: 8px;
-                font-size: 15px;
+                background-color: rgba(255, 255, 255, 0.25);
+                color: white;
+                padding: 16px 32px;
+                border: 2px solid rgba(255, 255, 255, 0.4);
+                border-radius: 10px;
+                font-size: 16px;
                 font-weight: bold;
-                min-height: 22px;
+                min-height: 28px;
             }
             QPushButton:hover {
-                background-color: #d0d0d0;
+                background-color: rgba(255, 255, 255, 0.35);
+                border: 2px solid rgba(255, 255, 255, 0.6);
             }
             QPushButton:pressed {
-                background-color: #c0c0c0;
+                background-color: rgba(255, 255, 255, 0.15);
+                padding-top: 17px;
+                padding-bottom: 15px;
             }
         """)
         self.cancel_button.clicked.connect(self.reject)
@@ -237,13 +265,17 @@ class LoginDialog(QDialog):
         # Status label
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("""
-            color: #e74c3c; 
-            font-size: 12px;
+            color: #ffffff; 
+            font-size: 14px;
             background-color: transparent;
-            padding: 5px;
+            padding: 0px;
+            min-height: 0px;
+            border-radius: 8px;
+            font-weight: 500;
         """)
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setWordWrap(True)
+        self.status_label.setVisible(False)  # Ẩn khi chưa có message
         layout.addWidget(self.status_label)
         
         self.setLayout(layout)
@@ -255,38 +287,47 @@ class LoginDialog(QDialog):
         
         # Validation
         if not username:
+            self.status_label.setVisible(True)
             self.status_label.setText("⚠️ Vui lòng nhập username")
             self.status_label.setStyleSheet("""
-                color: #e74c3c; 
-                font-size: 12px;
-                background-color: #fadbd8;
-                padding: 8px;
-                border-radius: 4px;
+                color: #ffffff; 
+                font-size: 14px;
+                background-color: rgba(231, 76, 60, 0.8);
+                padding: 12px 16px;
+                border-radius: 8px;
+                min-height: 22px;
+                font-weight: 500;
             """)
             self.username_input.setFocus()
             return
             
         if not password:
+            self.status_label.setVisible(True)
             self.status_label.setText("⚠️ Vui lòng nhập password")
             self.status_label.setStyleSheet("""
-                color: #e74c3c; 
-                font-size: 12px;
-                background-color: #fadbd8;
-                padding: 8px;
-                border-radius: 4px;
+                color: #ffffff; 
+                font-size: 14px;
+                background-color: rgba(231, 76, 60, 0.8);
+                padding: 12px 16px;
+                border-radius: 8px;
+                min-height: 22px;
+                font-weight: 500;
             """)
             self.password_input.setFocus()
             return
         
         # Disable inputs during authentication
         self.set_inputs_enabled(False)
+        self.status_label.setVisible(True)
         self.status_label.setText("🔄 Đang xác thực...")
         self.status_label.setStyleSheet("""
-            color: #3498db; 
-            font-size: 12px;
-            background-color: #d6eaf8;
-            padding: 8px;
-            border-radius: 4px;
+            color: #ffffff; 
+            font-size: 14px;
+            background-color: rgba(52, 152, 219, 0.8);
+            padding: 12px 16px;
+            border-radius: 8px;
+            min-height: 22px;
+            font-weight: 500;
         """)
         
         # Authenticate
@@ -295,13 +336,16 @@ class LoginDialog(QDialog):
             
             if self.api_client.authenticate(username, password):
                 # Success
+                self.status_label.setVisible(True)
                 self.status_label.setText("✅ Đăng nhập thành công!")
                 self.status_label.setStyleSheet("""
-                    color: #27ae60; 
-                    font-size: 12px;
-                    background-color: #d5f4e6;
-                    padding: 8px;
-                    border-radius: 4px;
+                    color: #ffffff; 
+                    font-size: 14px;
+                    background-color: rgba(39, 174, 96, 0.9);
+                    padding: 12px 16px;
+                    border-radius: 8px;
+                    min-height: 22px;
+                    font-weight: 500;
                 """)
                 
                 # Save credentials if remember me is checked
@@ -317,26 +361,32 @@ class LoginDialog(QDialog):
                 self.accept()
             else:
                 # Failed
+                self.status_label.setVisible(True)
                 self.status_label.setText("❌ Đăng nhập thất bại! Kiểm tra lại thông tin.")
                 self.status_label.setStyleSheet("""
-                    color: #e74c3c; 
-                    font-size: 12px;
-                    background-color: #fadbd8;
-                    padding: 8px;
-                    border-radius: 4px;
+                    color: #ffffff; 
+                    font-size: 14px;
+                    background-color: rgba(231, 76, 60, 0.9);
+                    padding: 12px 16px;
+                    border-radius: 8px;
+                    min-height: 22px;
+                    font-weight: 500;
                 """)
                 self.set_inputs_enabled(True)
                 self.password_input.clear()
                 self.password_input.setFocus()
                 
         except Exception as e:
+            self.status_label.setVisible(True)
             self.status_label.setText(f"❌ Lỗi kết nối: {str(e)}")
             self.status_label.setStyleSheet("""
-                color: #e74c3c; 
-                font-size: 12px;
-                background-color: #fadbd8;
-                padding: 8px;
-                border-radius: 4px;
+                color: #ffffff; 
+                font-size: 14px;
+                background-color: rgba(231, 76, 60, 0.9);
+                padding: 12px 16px;
+                border-radius: 8px;
+                min-height: 22px;
+                font-weight: 500;
             """)
             self.set_inputs_enabled(True)
     

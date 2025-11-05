@@ -28,6 +28,12 @@ export default function ElevenLabsPage() {
     user_id: 0,
     quantity: 1,
   });
+  const [importProgress, setImportProgress] = useState({
+    isImporting: false,
+    current: 0,
+    total: 0,
+    status: ''
+  });
   const [checkingKey, setCheckingKey] = useState<number | null>(null);
   const [checkingAll, setCheckingAll] = useState(false);
   const [showProgressModal, setShowProgressModal] = useState(false);
@@ -121,11 +127,53 @@ export default function ElevenLabsPage() {
 
   const handleBulkImport = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    // Count total keys
+    const lines = bulkImportData.keys_text.split('\n').filter(line => line.trim().length > 0);
+    const totalKeys = lines.length;
+    
+    if (totalKeys === 0) {
+      alert('⚠️ Không có key nào để import!');
+      return;
+    }
+    
+    // Start progress animation
+    setImportProgress({
+      isImporting: true,
+      current: 0,
+      total: totalKeys,
+      status: 'Đang chuẩn bị...'
+    });
+    
     try {
+      // Simulate progress animation while importing
+      const progressInterval = setInterval(() => {
+        setImportProgress(prev => {
+          if (prev.current >= prev.total) {
+            clearInterval(progressInterval);
+            return prev;
+          }
+          return {
+            ...prev,
+            current: Math.min(prev.current + Math.ceil(prev.total / 20), prev.total),
+            status: `Đang import key ${prev.current + 1}/${prev.total}...`
+          };
+        });
+      }, 100);
+      
       const result = await bulkImportElevenLabsKeys(
         bulkImportData.keys_text,
         bulkImportData.assigned_user_id || undefined
       );
+      
+      // Complete progress
+      clearInterval(progressInterval);
+      setImportProgress({
+        isImporting: false,
+        current: totalKeys,
+        total: totalKeys,
+        status: '✅ Hoàn thành!'
+      });
       
       alert(
         `✅ Import thành công!\n\n` +
@@ -137,8 +185,10 @@ export default function ElevenLabsPage() {
       
       setShowBulkImportModal(false);
       setBulkImportData({ keys_text: '', assigned_user_id: 0 });
+      setImportProgress({ isImporting: false, current: 0, total: 0, status: '' });
       loadKeys();
     } catch (err: any) {
+      setImportProgress({ isImporting: false, current: 0, total: 0, status: '' });
       alert(err.message || 'Failed to bulk import keys');
     }
   };
@@ -621,12 +671,63 @@ export default function ElevenLabsPage() {
                   </select>
                 </div>
 
+                {/* Progress Bar */}
+                {importProgress.isImporting && (
+                  <div className="bg-gradient-to-r from-blue-50 to-purple-50 p-6 rounded-lg border-2 border-blue-200 shadow-lg">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-sm font-semibold text-gray-700">
+                        {importProgress.status}
+                      </span>
+                      <span className="text-sm font-bold text-blue-600">
+                        {importProgress.current} / {importProgress.total}
+                      </span>
+                    </div>
+                    
+                    {/* Animated Progress Bar */}
+                    <div className="relative w-full h-6 bg-gray-200 rounded-full overflow-hidden shadow-inner">
+                      <div 
+                        className="absolute top-0 left-0 h-full bg-gradient-to-r from-blue-500 to-purple-600 transition-all duration-300 ease-out flex items-center justify-end pr-3"
+                        style={{ width: `${(importProgress.current / importProgress.total) * 100}%` }}
+                      >
+                        <span className="text-xs font-bold text-white drop-shadow">
+                          {Math.round((importProgress.current / importProgress.total) * 100)}%
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Spinning Loader */}
+                    <div className="flex items-center justify-center mt-4 space-x-2">
+                      <RefreshCw className="w-5 h-5 text-blue-600 animate-spin" />
+                      <span className="text-sm text-gray-600 font-medium">Đang xử lý, vui lòng đợi...</span>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex justify-end space-x-3 pt-4">
-                  <button type="button" onClick={() => setShowBulkImportModal(false)} className="btn btn-secondary">
+                  <button 
+                    type="button" 
+                    onClick={() => setShowBulkImportModal(false)} 
+                    className="btn btn-secondary"
+                    disabled={importProgress.isImporting}
+                  >
                     Hủy
                   </button>
-                  <button type="submit" className="btn btn-primary">
-                    Import Keys
+                  <button 
+                    type="submit" 
+                    className="btn btn-primary flex items-center space-x-2"
+                    disabled={importProgress.isImporting}
+                  >
+                    {importProgress.isImporting ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>Đang import...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-4 h-4" />
+                        <span>Import Keys</span>
+                      </>
+                    )}
                   </button>
                 </div>
               </form>
