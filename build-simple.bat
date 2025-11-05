@@ -42,6 +42,7 @@ echo [3/3] Building executable...
 pyinstaller --name="WorkFlowTool" ^
     --onefile ^
     --windowed ^
+    --icon=logo.ico ^
     --hidden-import=requests ^
     --hidden-import=cryptography ^
     --hidden-import=PIL ^
