@@ -1,0 +1,83 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+env/
+ENV/
+.venv
+
+# PySide6 / Qt
+*.qmlc
+*.jsc
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# WorkFlow specific
+.workflow_creds
+API.txt
+*.log
+*.tmp
+vgp_settings.json
+*.json.bak
+
+# Next.js / Admin Panel
+admin-panel/node_modules/
+admin-panel/.next/
+admin-panel/out/
+admin-panel/build/
+admin-panel/.env
+admin-panel/.env*.local
+admin-panel/.vercel
+admin-panel/npm-debug.log*
+admin-panel/yarn-debug.log*
+admin-panel/yarn-error.log*
+admin-panel/.pnp
+admin-panel.pnp.js
+admin-panel/*.tsbuildinfo
+admin-panel/next-env.d.ts
+
+# Database / Config (sensitive)
+*.db
+*.sqlite
+*.sqlite3
+config.json
+secrets.json
+
+# Output folders (optional - uncomment if you don't want to track outputs)
+# voice/
+# image/
+# video/
+# C:/WorkFlow/
+# C:/voice/
+# C:/image/
+# C:/video/
+
