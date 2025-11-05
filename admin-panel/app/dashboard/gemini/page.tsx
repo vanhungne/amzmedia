@@ -105,7 +105,7 @@ export default function GeminiKeysPage() {
         {/* Header */}
         <div className="mb-6">
           <h1 className="text-3xl font-bold text-gray-900 mb-2">Gemini API Keys</h1>
-          <p className="text-gray-600">Quản lý Gemini API keys cho việc tạo ảnh</p>
+          <p className="text-gray-600">Quản lý Gemini API keys cho việc tạo ảnh (Shared cho tất cả users)</p>
         </div>
 
         {/* Stats Cards */}
@@ -202,20 +202,23 @@ export default function GeminiKeysPage() {
 
                 <div className="mb-4">
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Assign User
+                    Assign User <span className="text-xs text-gray-500">(Optional - Keys được share cho tất cả)</span>
                   </label>
                   <select
                     value={formData.assigned_user_id}
                     onChange={(e) => setFormData({ ...formData, assigned_user_id: parseInt(e.target.value) })}
                     className="input"
                   >
-                    <option value={0}>-- Không gán --</option>
+                    <option value={0}>-- Shared cho tất cả users --</option>
                     {users.map((user) => (
                       <option key={user.id} value={user.id}>
                         {user.username}
                       </option>
                     ))}
                   </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    💡 Gemini keys được chia sẻ cho toàn bộ users, không cần assign riêng
+                  </p>
                 </div>
 
                 {editingKey && (

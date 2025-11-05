@@ -441,8 +441,8 @@ class WorkFlowAPIClient:
     
     def get_gemini_keys(self) -> List[Dict]:
         """
-        Get Gemini API keys assigned to current user from server
-        Returns list of active Gemini keys
+        Get all active Gemini API keys from server (shared by all users)
+        Returns list of active Gemini keys for image generation
         """
         if not self.token:
             print("❌ Not authenticated. Call authenticate() first.")
@@ -480,7 +480,8 @@ class WorkFlowAPIClient:
     
     def report_gemini_status(self, key_id: int, status: str, error_message: str = None) -> bool:
         """
-        Report Gemini key status to server (auto-report dead/error keys)
+        Report Gemini key status to server (shared keys - any user can report)
+        Auto-report dead/error keys to help other users
         
         Args:
             key_id: Gemini key ID

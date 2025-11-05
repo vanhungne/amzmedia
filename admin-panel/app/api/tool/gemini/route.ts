@@ -5,15 +5,12 @@ import sql from 'mssql';
 
 /**
  * GET /api/tool/gemini
- * Get Gemini keys assigned to current user
+ * Get all active Gemini keys (shared by all users)
  */
 async function getMyGeminiKeys(req: NextRequest) {
   try {
-    const userId = (req as any).user.userId;
-    
     const db = await getDb();
     const result = await db.request()
-      .input('user_id', sql.Int, userId)
       .query(`
         SELECT 
           [id],
@@ -21,9 +18,8 @@ async function getMyGeminiKeys(req: NextRequest) {
           [name],
           [status]
         FROM [dbo].[gemini_keys]
-        WHERE [assigned_user_id] = @user_id 
-          AND [status] = 'active'
-        ORDER BY [last_used] ASC, [id] ASC
+        WHERE [status] = 'active'
+        ORDER BY [last_used] ASC NULLS FIRST, [id] ASC
       `);
     
     return NextResponse.json({
@@ -31,7 +27,7 @@ async function getMyGeminiKeys(req: NextRequest) {
       keys: result.recordset
     });
   } catch (error: any) {
-    console.error('Get my Gemini keys error:', error);
+    console.error('Get Gemini keys error:', error);
     return NextResponse.json(
       { success: false, error: 'Internal server error' },
       { status: 500 }
@@ -41,11 +37,10 @@ async function getMyGeminiKeys(req: NextRequest) {
 
 /**
  * POST /api/tool/gemini
- * Report Gemini key status
+ * Report Gemini key status (any authenticated user can report)
  */
 async function reportGeminiStatus(req: NextRequest) {
   try {
-    const userId = (req as any).user.userId;
     const body = await req.json();
     const { key_id, status, error_message } = body;
     
@@ -58,19 +53,18 @@ async function reportGeminiStatus(req: NextRequest) {
     
     const db = await getDb();
     
-    // Verify key belongs to user
+    // Verify key exists (no need to check user assignment since keys are shared)
     const keyCheck = await db.request()
       .input('key_id', sql.Int, key_id)
-      .input('user_id', sql.Int, userId)
       .query(`
         SELECT [id] FROM [dbo].[gemini_keys] 
-        WHERE [id] = @key_id AND [assigned_user_id] = @user_id
+        WHERE [id] = @key_id
       `);
     
     if (keyCheck.recordset.length === 0) {
       return NextResponse.json(
-        { success: false, error: 'Key not found or not assigned to you' },
-        { status: 403 }
+        { success: false, error: 'Key not found' },
+        { status: 404 }
       );
     }
     
