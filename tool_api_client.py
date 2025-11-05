@@ -26,7 +26,7 @@ def get_device_id() -> str:
 class WorkFlowAPIClient:
     """Client for WorkFlow Admin Panel API"""
     
-    def __init__(self, base_url: str = "http://localhost:3000"):
+    def __init__(self, base_url: str = "https://amz.io.vn"):
         self.base_url = base_url.rstrip('/')
         self.token: Optional[str] = None
         self.user_info: Optional[Dict] = None
@@ -519,7 +519,7 @@ class WorkFlowAPIClient:
 # Example Usage
 if __name__ == "__main__":
     # Initialize client
-    client = WorkFlowAPIClient("http://localhost:3000")
+    client = WorkFlowAPIClient("https://amz.io.vn")
     
     # Authenticate
     if client.authenticate("admin", "admin123"):

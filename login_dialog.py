@@ -16,11 +16,11 @@ from pathlib import Path
 # ============================================================
 # SERVER CONFIGURATION - Thay đổi URL server tại đây
 # ============================================================
-DEFAULT_SERVER_URL = "http://localhost:3000"  # Admin Panel chạy local
+DEFAULT_SERVER_URL = "https://amz.io.vn"  # Production server
 # Để đổi server, sửa URL ở trên, ví dụ:
+# DEFAULT_SERVER_URL = "http://localhost:3000"  # Local development
 # DEFAULT_SERVER_URL = "http://14.226.226.126:3000"  # Remote server
 # DEFAULT_SERVER_URL = "http://192.168.1.100:3000"  # LAN
-# DEFAULT_SERVER_URL = "https://api.workflow.com"  # Production
 # ============================================================
 
 

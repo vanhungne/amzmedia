@@ -99,16 +99,16 @@ def check_admin_panel_connection():
     
     try:
         import requests
-        response = requests.get("http://localhost:3000", timeout=3)
+        response = requests.get("https://amz.io.vn", timeout=5)
         if response.status_code == 200:
-            print("  [OK] Admin Panel is running at http://localhost:3000")
+            print("  [OK] Admin Panel is running at https://amz.io.vn")
             return True
         else:
             print(f"  [WARNING] Admin Panel responded with status {response.status_code}")
             return False
     except requests.exceptions.ConnectionError:
-        print("  [ERROR] Cannot connect to Admin Panel at http://localhost:3000")
-        print("     Start it with: cd admin-panel && npm run dev")
+        print("  [ERROR] Cannot connect to Admin Panel at https://amz.io.vn")
+        print("     Please check your internet connection")
         return False
     except Exception as e:
         print(f"  [ERROR] Error checking Admin Panel: {e}")
@@ -123,9 +123,9 @@ def check_api_endpoints():
         
         # Check auth endpoint
         response = requests.post(
-            "http://localhost:3000/api/tool/auth",
+            "https://amz.io.vn/api/tool/auth",
             json={"username": "test", "password": "test"},
-            timeout=3
+            timeout=5
         )
         if response.status_code in [200, 401]:
             print("  [OK] Auth endpoint (/api/tool/auth) is accessible")
@@ -134,8 +134,8 @@ def check_api_endpoints():
         
         # Check projects endpoint (will fail without auth, but should be accessible)
         response = requests.get(
-            "http://localhost:3000/api/tool/projects",
-            timeout=3
+            "https://amz.io.vn/api/tool/projects",
+            timeout=5
         )
         if response.status_code in [200, 401]:
             print("  [OK] Projects endpoint (/api/tool/projects) is accessible")
@@ -190,17 +190,16 @@ def main():
     if all_ok:
         print("\n[SUCCESS] ALL CHECKS PASSED!")
         print("\n[Next Steps]")
-        print("   1. Start Admin Panel: cd admin-panel && npm run dev")
-        print("   2. Test Login: python test_login.py")
-        print("   3. Run Application: python GenVideoPro.py")
+        print("   1. Test Login: python test_login.py")
+        print("   2. Run Application: python GenVideoPro.py")
         print("\n[Guide] Read LOGIN_GUIDE.md for detailed instructions")
     else:
         print("\n[ERROR] SOME CHECKS FAILED!")
         print("\n[Fix] Please fix the issues above before running the application.")
     
     if not admin_panel_ok:
-        print("\n[Warning] Admin Panel is not running!")
-        print("   Start it with: cd admin-panel && npm run dev")
+        print("\n[Warning] Admin Panel is not accessible!")
+        print("   Connecting to: https://amz.io.vn")
     
     print("\n" + "=" * 70)
     
