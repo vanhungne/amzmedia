@@ -1,0 +1,15 @@
+# Core dependencies
+PySide6>=6.5.0
+requests>=2.31.0
+cryptography>=41.0.0
+
+# Image processing
+Pillow>=10.0.0
+
+# Build tool
+pyinstaller>=5.13.0
+
+# Optional - for auto workflow
+# groq (if using Groq API)
+# openai (if using OpenAI API)
+

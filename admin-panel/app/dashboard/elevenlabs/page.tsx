@@ -93,8 +93,8 @@ export default function ElevenLabsPage() {
     try {
       const submitData = {
         ...formData,
-        assigned_user_id: formData.assigned_user_id || null,
-        credit_balance: formData.credit_balance || null,
+        assigned_user_id: formData.assigned_user_id || undefined,
+        credit_balance: formData.credit_balance || undefined,
       };
 
       if (editingKey) {

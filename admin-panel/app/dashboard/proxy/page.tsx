@@ -75,7 +75,7 @@ export default function ProxyPage() {
     try {
       const submitData = {
         ...formData,
-        assigned_user_id: formData.assigned_user_id || null,
+        assigned_user_id: formData.assigned_user_id || undefined,
       };
 
       if (editingKey) {

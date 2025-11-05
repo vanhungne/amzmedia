@@ -3,7 +3,7 @@
 import Layout from '@/components/Layout';
 import { useState, useEffect } from 'react';
 import { getUsers, createUser, updateUser, deleteUser, type User } from '@/lib/api';
-import { Plus, Edit, Trash2, X, CheckCircle, XCircle, Smartphone, RefreshCw } from 'lucide-react';
+import { Plus, Edit, Trash2, X, CheckCircle, XCircle, Smartphone, RefreshCw, Users } from 'lucide-react';
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
@@ -172,8 +172,8 @@ export default function UsersPage() {
                   <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Active
                   </th>
-                  <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Ready (>800)
+                  <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">                                     
+                    Ready (&gt;800)
                   </th>
                   <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Ever Received
