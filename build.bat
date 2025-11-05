@@ -61,15 +61,15 @@ if exist build rmdir /s /q build
 mkdir dist
 mkdir dist\admin-panel
 
+REM Create image folder if not exists
+if not exist image mkdir image
+
 echo [5/5] Building Python executable with PyInstaller...
 pyinstaller --name="WorkFlowTool" ^
     --onefile ^
     --windowed ^
-    --icon=image\logo.ico ^
-    --add-data "image;image" ^
     --add-data "admin-panel\.next;admin-panel\.next" ^
     --add-data "admin-panel\public;admin-panel\public" ^
-    --add-data "admin-panel\package.json;admin-panel" ^
     --hidden-import=PIL ^
     --hidden-import=PIL.Image ^
     --hidden-import=requests ^

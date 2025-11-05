@@ -34,14 +34,18 @@ echo Cleaning previous builds...
 if exist dist rmdir /s /q dist
 if exist build rmdir /s /q build
 
+REM Create image folder if not exists (empty folder is OK)
+if not exist image mkdir image
+
 REM Build executable
 echo [3/3] Building executable...
 pyinstaller --name="WorkFlowTool" ^
     --onefile ^
     --windowed ^
-    --add-data "image;image" ^
     --hidden-import=requests ^
     --hidden-import=cryptography ^
+    --hidden-import=PIL ^
+    --hidden-import=PIL.Image ^
     --collect-all PySide6 ^
     --clean ^
     GenVideoPro.py
