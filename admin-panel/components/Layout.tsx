@@ -5,7 +5,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
 import { logout, getCurrentUser } from '@/lib/api';
-import { User, Settings, Users, FolderOpen, LogOut, Key, Network, ChevronRight, Activity } from 'lucide-react';
+import { User, Settings, Users, FolderOpen, LogOut, Key, Network, ChevronRight, Activity, Image as ImageIcon } from 'lucide-react';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -60,6 +60,7 @@ export default function Layout({ children }: LayoutProps) {
     { href: '/dashboard/projects', label: 'Projects', icon: FolderOpen, desc: 'Quản lý dự án' },
     { href: '/dashboard/users', label: 'Users', icon: Users, desc: 'Quản lý người dùng' },
     { href: '/dashboard/elevenlabs', label: 'ElevenLabs', icon: Key, desc: 'API Keys' },
+    { href: '/dashboard/gemini', label: 'Gemini', icon: ImageIcon, desc: 'Gemini Keys' },
     { href: '/dashboard/proxy', label: 'Proxy', icon: Network, desc: 'Proxy Keys' },
     { href: '/dashboard/activity', label: 'Activity', icon: Activity, desc: 'Lịch sử hoạt động' },
   ];
