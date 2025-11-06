@@ -6681,7 +6681,8 @@ class MainWindow(QMainWindow):
         
         # Add Image Generator Tab
         if IMAGE_TAB_AVAILABLE:
-            self.image_gen_widget = ImageGeneratorTab(self.tab_image_generator)
+            # Pass api_client to enable server-based key management
+            self.image_gen_widget = ImageGeneratorTab(self.tab_image_generator, api_client=self.api_client)
             layout.addWidget(self.image_gen_widget)
         else:
             # Fallback message
@@ -7370,6 +7371,12 @@ def main():
             QTimer.singleShot(1000, win.elevenlabs_widget.load_keys_from_server)
             # Auto-load Proxy keys from server
             QTimer.singleShot(1500, win.elevenlabs_widget.load_proxy_from_server)
+        
+        # Update API client reference in Image Generator widget if available
+        if hasattr(win, 'image_gen_widget') and win.image_gen_widget:
+            win.image_gen_widget.api_client = win.api_client
+            # Auto-load Gemini keys from server
+            QTimer.singleShot(2000, win.image_gen_widget.load_gemini_keys_from_server)
         
         # Update UI permissions
         win.update_ui_permissions()

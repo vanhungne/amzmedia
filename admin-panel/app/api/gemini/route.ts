@@ -49,11 +49,21 @@ async function createGeminiKey(req: NextRequest) {
   try {
     const userId = (req as any).user.userId;
     const body = await req.json();
-    const { api_key, name, assigned_user_id } = body;
+    let { api_key, name, assigned_user_id } = body;
     
     if (!api_key) {
       return NextResponse.json(
         { error: 'API key is required' },
+        { status: 400 }
+      );
+    }
+    
+    // Clean and trim API key before saving
+    api_key = api_key.trim().replace(/[\r\n\t]/g, '');
+    
+    if (!api_key) {
+      return NextResponse.json(
+        { error: 'API key is invalid after cleaning' },
         { status: 400 }
       );
     }

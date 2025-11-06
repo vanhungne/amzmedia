@@ -1661,9 +1661,10 @@ class ImageGeneratorTab(QWidget):
     script_analysis_success = Signal(list)  # List[str] of prompts
     script_analysis_error = Signal(str)     # Error message
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, api_client=None):
         super().__init__(parent)
         
+        self.api_client = api_client
         self.settings = SettingsManager(SETTINGS_PATH)
         
         # Theme - Match Voice App Style
@@ -1769,12 +1770,9 @@ class ImageGeneratorTab(QWidget):
         
         self.rows = []
         
-        HARDCODED_KEYS = [
-            "AIzaSyBZI6MARCTjityVTpe5-_SWyONlm-Cdm-w",
-            "AIzaSyCzs6FxFjNtjT6UZg0rHDuLJZy3qPwX99k",
-            "AIzaSyASh-ecEWrpXbjc-JPKhl6RUPzDfs7kkoM"
-        ]
-        self.rotator = KeyRotator(HARDCODED_KEYS)
+        # Initialize with empty keys - will be loaded from server
+        DEFAULT_KEY = "AIzaSyBZI6MARCTjityVTpe5-_SWyONlm-Cdm-w"  # Fallback only
+        self.rotator = KeyRotator([DEFAULT_KEY])
         
         self.output_dir = Path(self.settings.get("output_dir", str(DEFAULT_OUTPUT_DIR)))
         self.output_dir.mkdir(exist_ok=True)
@@ -2066,6 +2064,13 @@ class ImageGeneratorTab(QWidget):
         toolbar_layout.addWidget(delete_btn)
         
         toolbar_layout.addStretch()
+        
+        # Button to load Gemini keys from server
+        load_keys_btn = ModernButton("🔑 Load Keys", Theme.PRIMARY)
+        load_keys_btn.setMaximumWidth(120)
+        load_keys_btn.setToolTip("Load Gemini API keys from Admin Panel server")
+        load_keys_btn.clicked.connect(self.load_gemini_keys_from_server)
+        toolbar_layout.addWidget(load_keys_btn)
         
         right_layout.addWidget(toolbar)
         
@@ -2761,6 +2766,66 @@ class ImageGeneratorTab(QWidget):
                 f.write(b)
             saved.append(out)
         return saved
+    
+    def load_gemini_keys_from_server(self):
+        """Load Gemini API keys from Admin Panel server"""
+        if not self.api_client or not self.api_client.is_authenticated():
+            self.set_status("❌ Not connected to server. Using fallback key.")
+            print("❌ Not authenticated. Cannot load Gemini keys from server.")
+            return
+        
+        self.set_status("☁️ Loading Gemini keys from server...")
+        print("☁️ Loading Gemini API keys from server...")
+        
+        try:
+            keys_data = self.api_client.get_gemini_keys()
+            
+            if not keys_data:
+                self.set_status("⚠️ No Gemini keys found on server")
+                print("⚠️ No Gemini keys found on server or failed to load")
+                return
+            
+            # Extract and clean API keys from the data
+            # keys_data is a list of dict like: [{'id': 1, 'api_key': 'AIza...', 'name': '...', 'status': 'active'}]
+            api_keys = []
+            for item in keys_data:
+                raw_key = item.get('api_key', '')
+                # Clean key: trim, remove newlines, tabs, and any whitespace
+                clean_key = raw_key.strip().replace('\r', '').replace('\n', '').replace('\t', '').replace(' ', '')
+                
+                if clean_key:
+                    api_keys.append(clean_key)
+                    # Debug logging - show first/last 8 chars only
+                    print(f"🔑 Loaded key {item.get('id')}: {clean_key[:8]}...{clean_key[-8:]} (length: {len(clean_key)})")
+            
+            if not api_keys:
+                self.set_status("⚠️ No valid Gemini keys found")
+                print("⚠️ No valid API keys extracted from server data")
+                return
+            
+            # Update the key rotator with server keys
+            self.rotator = KeyRotator(api_keys)
+            
+            key_count = len(api_keys)
+            self.set_status(f"✅ Loaded {key_count} Gemini keys from server")
+            print(f"✅ Loaded {key_count} Gemini API keys from server successfully")
+            print(f"📝 Keys are ready for use. First key starts with: {api_keys[0][:12]}...")
+            
+            # Show message to user
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self,
+                "Success",
+                f"✅ Loaded {key_count} Gemini API keys from server!\n\n"
+                f"Keys are ready for image generation.\n"
+                f"🔒 Keys are stored securely in memory."
+            )
+            
+        except Exception as e:
+            self.set_status(f"❌ Failed to load Gemini keys: {str(e)}")
+            print(f"❌ Error loading Gemini keys from server: {e}")
+            import traceback
+            traceback.print_exc()
 
 def main():
     """Main function - chỉ dùng khi chạy standalone"""

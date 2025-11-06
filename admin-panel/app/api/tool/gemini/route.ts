@@ -22,9 +22,15 @@ async function getMyGeminiKeys(req: NextRequest) {
         ORDER BY [last_used] ASC NULLS FIRST, [id] ASC
       `);
     
+    // Clean and trim API keys before returning
+    const cleanedKeys = result.recordset.map(record => ({
+      ...record,
+      api_key: (record.api_key || '').trim().replace(/[\r\n\t]/g, '')
+    }));
+    
     return NextResponse.json({
       success: true,
-      keys: result.recordset
+      keys: cleanedKeys
     });
   } catch (error: any) {
     console.error('Get Gemini keys error:', error);
