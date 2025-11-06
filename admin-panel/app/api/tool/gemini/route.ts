@@ -19,11 +19,14 @@ async function getMyGeminiKeys(req: NextRequest) {
           [status]
         FROM [dbo].[gemini_keys]
         WHERE [status] = 'active'
-        ORDER BY [last_used] ASC NULLS FIRST, [id] ASC
+        ORDER BY 
+          CASE WHEN [last_used] IS NULL THEN 0 ELSE 1 END,
+          [last_used] ASC,
+          [id] ASC
       `);
     
     // Clean and trim API keys before returning
-    const cleanedKeys = result.recordset.map(record => ({
+    const cleanedKeys = result.recordset.map((record: any) => ({
       ...record,
       api_key: (record.api_key || '').trim().replace(/[\r\n\t]/g, '')
     }));
@@ -34,8 +37,9 @@ async function getMyGeminiKeys(req: NextRequest) {
     });
   } catch (error: any) {
     console.error('Get Gemini keys error:', error);
+    console.error('Error details:', error.message);
     return NextResponse.json(
-      { success: false, error: 'Internal server error' },
+      { success: false, error: 'Internal server error', details: error.message },
       { status: 500 }
     );
   }
