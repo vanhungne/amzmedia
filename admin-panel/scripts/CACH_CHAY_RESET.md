@@ -75,3 +75,4 @@ npx tsx scripts/reset-database.ts
 **Khuyến nghị:** Dùng **Cách 1** (SQL Script) vì đơn giản và không cần config `.env`
 
 
+
