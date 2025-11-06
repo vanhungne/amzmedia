@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { verifyAuth } from '@/lib/auth';
+import { verifyToken } from '@/lib/auth';
 import { 
   generateOperationId, 
   createOperation, 
@@ -9,7 +9,7 @@ import {
   failOperation,
   addError 
 } from '@/lib/progressTracking';
-import { getPool } from '@/lib/db';
+import { getDb } from '@/lib/db';
 
 /**
  * POST /api/elevenlabs/bulk-import-with-progress
@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
-    const user = await verifyAuth(token);
+    const user = verifyToken(token);
     if (!user || user.role !== 'admin') {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
     }
@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
     createOperation(operationId, keys.length);
 
     // Start processing in background (don't await)
-    processKeysInBackground(operationId, keys, assigned_user_id, user.id);
+    processKeysInBackground(operationId, keys, assigned_user_id, user.userId);
 
     // Return operation ID immediately
     return NextResponse.json({
@@ -79,7 +79,7 @@ async function processKeysInBackground(
   assigned_user_id: number | undefined,
   created_by: number
 ) {
-  const pool = await getPool();
+  const pool = await getDb();
   let successCount = 0;
   let errorCount = 0;
 
@@ -144,6 +144,7 @@ async function processKeysInBackground(
     failOperation(operationId, `Lỗi nghiêm trọng: ${error.message}`);
   }
 }
+
 
 
 

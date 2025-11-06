@@ -30,8 +30,8 @@ const nextConfig = {
   experimental: {
     // DISABLE optimistic client cache to prevent stale data
     optimisticClientCache: false,
-    // Enable aggressive CSS optimization
-    optimizeCss: true,
+    // Disable CSS optimization (requires critters module)
+    // optimizeCss: true,
   },
 
   // Headers for caching

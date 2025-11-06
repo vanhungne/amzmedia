@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { verifyAuth } from '@/lib/auth';
+import { verifyToken } from '@/lib/auth';
 import {
   generateOperationId,
   createOperation,
@@ -9,7 +9,7 @@ import {
   failOperation,
   addError
 } from '@/lib/progressTracking';
-import { getPool } from '@/lib/db';
+import { getDb } from '@/lib/db';
 
 /**
  * POST /api/elevenlabs/check-all-with-progress
@@ -25,13 +25,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
-    const user = await verifyAuth(token);
+    const user = verifyToken(token);
     if (!user || user.role !== 'admin') {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
     }
 
     // Get all keys
-    const pool = await getPool();
+    const pool = await getDb();
     const result = await pool.request().query(`
       SELECT id, api_key, name, status 
       FROM elevenlabs_keys 
@@ -75,7 +75,7 @@ async function checkKeysInBackground(
   operationId: string,
   keys: any[]
 ) {
-  const pool = await getPool();
+  const pool = await getDb();
   let successCount = 0;
   let deadCount = 0;
   let errorCount = 0;
@@ -172,6 +172,7 @@ async function checkKeysInBackground(
     failOperation(operationId, `Lỗi nghiêm trọng: ${error.message}`);
   }
 }
+
 
 
 
