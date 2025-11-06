@@ -3,7 +3,10 @@
 import Layout from '@/components/Layout';
 import { useState, useEffect } from 'react';
 import { getElevenLabsKeys, createElevenLabsKey, updateElevenLabsKey, deleteElevenLabsKey, getUsers, bulkImportElevenLabsKeys, bulkAssignElevenLabsKeys, checkElevenLabsKey, checkAllElevenLabsKeys, type ElevenLabsKey, type User } from '@/lib/api';
-import { Plus, Edit, Trash2, X, Key, AlertCircle, CheckCircle, XCircle, Upload, Users, RefreshCw } from 'lucide-react';
+import { Plus, Edit, Trash2, X, Key, AlertCircle, CheckCircle, XCircle, Upload, Users, RefreshCw, Search, ChevronLeft, ChevronRight } from 'lucide-react';
+import BulkOperationModal from '@/components/BulkOperationModal';
+import { useToast } from '@/components/Toast';
+import { useDebounce } from '@/lib/hooks';
 
 export default function ElevenLabsPage() {
   const [keys, setKeys] = useState<ElevenLabsKey[]>([]);
@@ -13,6 +16,12 @@ export default function ElevenLabsPage() {
   const [showBulkImportModal, setShowBulkImportModal] = useState(false);
   const [showBulkAssignModal, setShowBulkAssignModal] = useState(false);
   const [editingKey, setEditingKey] = useState<ElevenLabsKey | null>(null);
+  
+  // Progress tracking states
+  const [operationId, setOperationId] = useState<string | null>(null);
+  const [showProgressModal, setShowProgressModal] = useState(false);
+  const [progressTitle, setProgressTitle] = useState('');
+  const { success, error, warning, ToastContainer } = useToast();
   const [formData, setFormData] = useState({
     api_key: '',
     name: '',
@@ -36,7 +45,7 @@ export default function ElevenLabsPage() {
   });
   const [checkingKey, setCheckingKey] = useState<number | null>(null);
   const [checkingAll, setCheckingAll] = useState(false);
-  const [showProgressModal, setShowProgressModal] = useState(false);
+  const [showCheckProgressModal, setShowCheckProgressModal] = useState(false);
   const [progressData, setProgressData] = useState({
     total: 0,
     current: 0,
@@ -45,15 +54,95 @@ export default function ElevenLabsPage() {
     summary: null as any
   });
 
+  // Pagination and filter states
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(100); // Items per page - increased default to show more keys
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+  const [stats, setStats] = useState({
+    total: 0,
+    active: 0,
+    assigned: 0,
+    unassigned: 0
+  });
+  const [filters, setFilters] = useState({
+    status: '',
+    assigned_user_id: '',
+    search: ''
+  });
+
+  // Debounce search to avoid too many API calls
+  const debouncedSearch = useDebounce(filters.search, 500);
+
   useEffect(() => {
-    loadKeys();
     loadUsers();
+    
+    // Clean up any stale operation IDs from localStorage
+    // This prevents old operations from being polled
+    if (typeof window !== 'undefined') {
+      const localStorageKeys = Object.keys(localStorage);
+      localStorageKeys.forEach(key => {
+        if (key.startsWith('operation_') || key.includes('bulk_assign') || key.includes('bulk_import')) {
+          localStorage.removeItem(key);
+          console.log('[Cleanup] Removed stale operation from localStorage:', key);
+        }
+      });
+    }
   }, []);
 
+  useEffect(() => {
+    loadKeys();
+  }, [page, limit, filters.status, filters.assigned_user_id, debouncedSearch]);
+
   const loadKeys = async () => {
+    setLoading(true);
     try {
-      const res = await getElevenLabsKeys();
+      const res = await getElevenLabsKeys({
+        page,
+        limit,
+        status: filters.status || undefined,
+        assigned_user_id: filters.assigned_user_id ? parseInt(filters.assigned_user_id) : undefined,
+        search: debouncedSearch || undefined
+      });
       setKeys(res.keys);
+      
+      // Log stats to debug
+      console.log('[ElevenLabs Page] Received stats:', res.stats);
+      console.log('[ElevenLabs Page] Pagination total (filtered):', res.pagination.total);
+      console.log('[ElevenLabs Page] Stats total (full):', res.stats?.total);
+      
+      // Ensure stats are set correctly
+      if (res.stats) {
+        setStats({
+          total: res.stats.total || 0,
+          active: res.stats.active || 0,
+          assigned: res.stats.assigned || 0,
+          unassigned: res.stats.unassigned || 0
+        });
+      }
+      
+      // Use stats.total (full count) for pagination when no filters
+      // When filters are active, use filtered total for pagination
+      const fullTotal = res.stats?.total || 0;
+      const filteredTotal = res.pagination.total || 0;
+      const hasFilters = !!(filters.status || filters.assigned_user_id || filters.search);
+      
+      // For pagination: use filtered total if filters active, otherwise full total
+      const displayTotal = hasFilters ? filteredTotal : fullTotal;
+      
+      setTotal(displayTotal);
+      // Always calculate pages based on displayTotal, but ensure at least 1 page
+      // If no filters, use fullTotal for pagination (so admin can see all pages)
+      const paginationTotal = hasFilters ? filteredTotal : fullTotal;
+      const calculatedPages = Math.max(1, Math.ceil(paginationTotal / limit));
+      setTotalPages(calculatedPages);
+      
+      console.log('[ElevenLabs Page] Stats total (full):', fullTotal);
+      console.log('[ElevenLabs Page] Filtered total:', filteredTotal);
+      console.log('[ElevenLabs Page] Has filters:', hasFilters);
+      console.log('[ElevenLabs Page] Pagination total:', paginationTotal);
+      console.log('[ElevenLabs Page] Total pages:', calculatedPages);
+      console.log('[ElevenLabs Page] Current limit:', limit);
     } catch (err) {
       console.error('Failed to load ElevenLabs keys:', err);
     } finally {
@@ -195,20 +284,69 @@ export default function ElevenLabsPage() {
 
   const handleBulkAssign = async (e: React.FormEvent) => {
     e.preventDefault();
-    try {
-      const result = await bulkAssignElevenLabsKeys(
-        bulkAssignData.user_id,
-        undefined,
-        bulkAssignData.quantity
-      );
-      
-      alert(`✅ Assigned ${result.assigned_count} keys to user successfully!`);
-      setShowBulkAssignModal(false);
-      setBulkAssignData({ user_id: 0, quantity: 1 });
-      loadKeys();
-    } catch (err: any) {
-      alert(err.message || 'Failed to bulk assign keys');
+    
+    // Validation
+    if (!bulkAssignData.user_id) {
+      error('Vui lòng chọn user!');
+      return;
     }
+    
+    if (bulkAssignData.quantity < 1) {
+      error('Số lượng keys phải lớn hơn 0!');
+      return;
+    }
+    
+    try {
+      // Call API với progress tracking
+      const res = await fetch('/api/elevenlabs/bulk-assign-with-progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          user_id: bulkAssignData.user_id,
+          quantity: bulkAssignData.quantity
+        }),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || 'Failed to start bulk assign');
+      }
+
+      const data = await res.json();
+      
+      if (data.operationId) {
+        // Close assign modal
+        setShowBulkAssignModal(false);
+        
+        // Show progress modal
+        const selectedUser = users.find(u => u.id === bulkAssignData.user_id);
+        setProgressTitle(`Assign Keys cho ${selectedUser?.username || 'User'}`);
+        setOperationId(data.operationId);
+        setShowProgressModal(true);
+        
+        // Debug log
+        console.log('Bulk assign started:', {
+          operationId: data.operationId,
+          totalKeys: data.totalKeys,
+          user: selectedUser?.username
+        });
+      } else {
+        error('Không thể bắt đầu assign keys');
+        console.error('No operationId returned:', data);
+      }
+    } catch (err: any) {
+      error(err.message || 'Lỗi khi assign keys');
+      console.error('Bulk assign error:', err);
+    }
+  };
+  
+  const handleProgressComplete = () => {
+    success('✅ Assign keys hoàn thành!');
+    setBulkAssignData({ user_id: 0, quantity: 1 });
+    setShowProgressModal(false);
+    setOperationId(null); // Clear operation ID
+    loadKeys();
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -256,7 +394,16 @@ export default function ElevenLabsPage() {
   };
 
   const getUnassignedKeyCount = () => {
-    return keys.filter(k => k.assigned_user_id === null && k.status === 'active').length;
+    return stats.unassigned;
+  };
+
+  const handleFilterChange = (key: string, value: string) => {
+    setFilters(prev => ({ ...prev, [key]: value }));
+    setPage(1); // Reset to first page when filter changes
+  };
+
+  const handleSearch = (e: React.ChangeEvent<HTMLInputElement>) => {
+    handleFilterChange('search', e.target.value);
   };
 
   const handleCheckKey = async (keyId: number) => {
@@ -286,7 +433,7 @@ export default function ElevenLabsPage() {
     if (!confirm('Bạn có chắc muốn check tất cả keys? Progress sẽ được hiển thị realtime.')) return;
     
     setCheckingAll(true);
-    setShowProgressModal(true);
+    setShowCheckProgressModal(true);
     setProgressData({
       total: 0,
       current: 0,
@@ -366,6 +513,15 @@ export default function ElevenLabsPage() {
           </div>
           <div className="flex space-x-3">
             <button 
+              onClick={() => loadKeys()} 
+              disabled={loading}
+              className="btn btn-secondary flex items-center space-x-2"
+              title="Refresh data from database"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              <span>Refresh</span>
+            </button>
+            <button 
               onClick={handleCheckAllKeys} 
               disabled={checkingAll}
               className="btn btn-secondary flex items-center space-x-2"
@@ -393,26 +549,87 @@ export default function ElevenLabsPage() {
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
             <div className="bg-white rounded-lg shadow p-4 border-l-4 border-blue-500">
               <div className="text-sm text-gray-600">Total Keys</div>
-              <div className="text-2xl font-bold text-gray-900">{keys.length}</div>
+              <div className="text-2xl font-bold text-gray-900">
+                {stats.total?.toLocaleString('vi-VN') || 0}
+              </div>
+              <div className="text-xs text-gray-500 mt-1">
+                Tổng số keys trong hệ thống
+              </div>
             </div>
             <div className="bg-white rounded-lg shadow p-4 border-l-4 border-green-500">
               <div className="text-sm text-gray-600">Active Keys</div>
               <div className="text-2xl font-bold text-green-600">
-                {keys.filter(k => k.status === 'active').length}
+                {stats.active?.toLocaleString('vi-VN') || 0}
+              </div>
+              <div className="text-xs text-gray-500 mt-1">
+                Keys đang hoạt động
               </div>
             </div>
             <div className="bg-white rounded-lg shadow p-4 border-l-4 border-purple-500">
               <div className="text-sm text-gray-600">Assigned Keys</div>
               <div className="text-2xl font-bold text-purple-600">
-                {keys.filter(k => k.assigned_user_id !== null).length}
+                {stats.assigned?.toLocaleString('vi-VN') || 0}
+              </div>
+              <div className="text-xs text-gray-500 mt-1">
+                Keys đã được cấp phát
               </div>
             </div>
             <div className="bg-white rounded-lg shadow p-4 border-l-4 border-orange-500">
               <div className="text-sm text-gray-600">Unassigned Keys</div>
-              <div className="text-2xl font-bold text-orange-600">{getUnassignedKeyCount()}</div>
+              <div className="text-2xl font-bold text-orange-600">
+                {stats.unassigned?.toLocaleString('vi-VN') || 0}
+              </div>
+              <div className="text-xs text-gray-500 mt-1">
+                Keys chưa được cấp phát
+              </div>
             </div>
           </div>
         )}
+
+        {/* Search and Filter Bar */}
+        <div className="card mb-6">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="md:col-span-2">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                <input
+                  type="text"
+                  placeholder="Tìm kiếm theo tên hoặc API key..."
+                  value={filters.search}
+                  onChange={handleSearch}
+                  className="input pl-10 w-full"
+                />
+              </div>
+            </div>
+            <div>
+              <select
+                value={filters.status}
+                onChange={(e) => handleFilterChange('status', e.target.value)}
+                className="input w-full"
+              >
+                <option value="">Tất cả Status</option>
+                <option value="active">Active</option>
+                <option value="dead">Dead</option>
+                <option value="out_of_credit">Out of Credit</option>
+              </select>
+            </div>
+            <div>
+              <select
+                value={filters.assigned_user_id}
+                onChange={(e) => handleFilterChange('assigned_user_id', e.target.value)}
+                className="input w-full"
+              >
+                <option value="">Tất cả Users</option>
+                <option value="0">Unassigned</option>
+                {users.map((user) => (
+                  <option key={user.id} value={user.id.toString()}>
+                    {user.username}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
 
         {loading ? (
           <div className="text-center py-12">
@@ -502,6 +719,135 @@ export default function ElevenLabsPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* Pagination - Always show when there are keys */}
+        {!loading && (total > 0 || stats.total > 0) && (
+          <div className="card mt-6 bg-blue-50 border-2 border-blue-200">
+            <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+              {/* Left: Info and items per page */}
+              <div className="flex items-center gap-4">
+                <div className="text-sm font-semibold text-gray-700">
+                  📄 Trang <span className="text-blue-600 font-bold">{page}</span> / <span className="text-blue-600 font-bold">{totalPages || 1}</span> 
+                  {' • '}
+                  Hiển thị <span className="text-blue-600 font-bold">{((page - 1) * limit) + 1}</span> - <span className="text-blue-600 font-bold">{Math.min(page * limit, total || stats.total || 0)}</span> 
+                  {' trong tổng số '}
+                  <span className="text-blue-600 font-bold">{(total || stats.total || 0)?.toLocaleString('vi-VN')}</span> keys
+                  {stats.total > 0 && total !== stats.total && (
+                    <span className="text-xs text-gray-500 ml-2">
+                      (toàn bộ: {stats.total.toLocaleString('vi-VN')})
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-600">Hiển thị:</label>
+                  <select
+                    value={limit}
+                    onChange={(e) => {
+                      setLimit(parseInt(e.target.value));
+                      setPage(1); // Reset to first page when changing limit
+                    }}
+                    className="text-sm border border-gray-300 rounded px-2 py-1 bg-white"
+                  >
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                    <option value={200}>200</option>
+                    <option value={500}>500</option>
+                  </select>
+                  <span className="text-xs text-gray-600">keys/trang</span>
+                </div>
+              </div>
+              
+              {/* Right: Pagination controls - Always show if stats.total > limit */}
+              {(stats.total > limit || totalPages > 1) && (
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={() => setPage(1)}
+                    disabled={page === 1}
+                    className="btn btn-secondary flex items-center space-x-1 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                    title="Trang đầu"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    <ChevronLeft className="w-4 h-4 -ml-2" />
+                  </button>
+                  <button
+                    onClick={() => setPage(prev => Math.max(1, prev - 1))}
+                    disabled={page === 1}
+                    className="btn btn-secondary flex items-center space-x-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    <span>Trước</span>
+                  </button>
+                  
+                  {/* Page numbers */}
+                  <div className="flex items-center space-x-1">
+                    {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                      let pageNum;
+                      if (totalPages <= 5) {
+                        pageNum = i + 1;
+                      } else if (page <= 3) {
+                        pageNum = i + 1;
+                      } else if (page >= totalPages - 2) {
+                        pageNum = totalPages - 4 + i;
+                      } else {
+                        pageNum = page - 2 + i;
+                      }
+                      return (
+                        <button
+                          key={pageNum}
+                          onClick={() => setPage(pageNum)}
+                          className={`px-3 py-1 rounded text-sm font-medium ${
+                            page === pageNum
+                              ? 'bg-primary-600 text-white shadow-md'
+                              : 'bg-white text-gray-700 hover:bg-gray-200 border border-gray-300'
+                          }`}
+                        >
+                          {pageNum}
+                        </button>
+                      );
+                    })}
+                    {totalPages > 5 && page < totalPages - 2 && (
+                      <>
+                        <span className="px-2 text-gray-400">...</span>
+                        <button
+                          onClick={() => setPage(totalPages)}
+                          className="px-3 py-1 rounded text-sm font-medium bg-white text-gray-700 hover:bg-gray-200 border border-gray-300"
+                        >
+                          {totalPages}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  
+                  <button
+                    onClick={() => setPage(prev => Math.min(totalPages, prev + 1))}
+                    disabled={page === totalPages}
+                    className="btn btn-secondary flex items-center space-x-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <span>Sau</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => setPage(totalPages)}
+                    disabled={page === totalPages}
+                    className="btn btn-secondary flex items-center space-x-1 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                    title="Trang cuối"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                    <ChevronRight className="w-4 h-4 -ml-2" />
+                  </button>
+                </div>
+              )}
+            </div>
+            
+            {/* Warning if not showing all */}
+            {(total > limit || stats.total > limit) && (
+              <div className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+                ⚠️ <strong>Lưu ý:</strong> Bạn đang xem {limit} keys trên trang này. Sử dụng pagination để xem tất cả <strong>{stats.total.toLocaleString('vi-VN')}</strong> keys hoặc tăng số lượng hiển thị trong dropdown bên trên.
+              </div>
+            )}
           </div>
         )}
 
@@ -807,7 +1153,7 @@ export default function ElevenLabsPage() {
         )}
 
         {/* Progress Modal for Check All */}
-        {showProgressModal && (
+        {showCheckProgressModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full mx-4 max-h-[90vh] overflow-hidden">
               <div className="flex justify-between items-center p-6 border-b bg-gradient-to-r from-blue-500 to-blue-600 text-white">
@@ -816,7 +1162,7 @@ export default function ElevenLabsPage() {
                   Checking All API Keys
                 </h2>
                 {!checkingAll && (
-                  <button onClick={() => setShowProgressModal(false)} className="text-white hover:text-gray-200">
+                  <button onClick={() => setShowCheckProgressModal(false)} className="text-white hover:text-gray-200">
                     <X className="w-6 h-6" />
                   </button>
                 )}
@@ -958,7 +1304,7 @@ export default function ElevenLabsPage() {
                 {!checkingAll && progressData.summary && (
                   <div className="mt-6 flex justify-end">
                     <button 
-                      onClick={() => setShowProgressModal(false)} 
+                      onClick={() => setShowCheckProgressModal(false)} 
                       className="btn btn-primary"
                     >
                       Đóng
@@ -969,6 +1315,21 @@ export default function ElevenLabsPage() {
             </div>
           </div>
         )}
+
+        {/* Toast Container */}
+        <ToastContainer />
+
+        {/* Bulk Operation Progress Modal */}
+        <BulkOperationModal
+          isOpen={showProgressModal}
+          onClose={() => {
+            setShowProgressModal(false);
+            setOperationId(null); // Clear operation ID when closing modal
+          }}
+          title={progressTitle}
+          operationId={operationId}
+          onComplete={handleProgressComplete}
+        />
       </div>
     </Layout>
   );

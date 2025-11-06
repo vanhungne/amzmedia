@@ -199,9 +199,47 @@ export async function deleteUser(id: number): Promise<void> {
 }
 
 // ElevenLabs Keys API
-export async function getElevenLabsKeys(): Promise<{ keys: ElevenLabsKey[] }> {
-  const res = await fetch(`${API_BASE}/elevenlabs`, {
+export async function getElevenLabsKeys(params?: {
+  page?: number;
+  limit?: number;
+  status?: string;
+  assigned_user_id?: number;
+  search?: string;
+}): Promise<{ 
+  keys: ElevenLabsKey[]; 
+  pagination: {
+    total: number;
+    page: number;
+    limit: number;
+    offset: number;
+    hasMore: boolean;
+    totalPages: number;
+  };
+  stats: {
+    total: number;
+    active: number;
+    assigned: number;
+    unassigned: number;
+  };
+}> {
+  const queryParams = new URLSearchParams();
+  if (params?.page) queryParams.set('page', params.page.toString());
+  if (params?.limit) queryParams.set('limit', params.limit.toString());
+  if (params?.status) queryParams.set('status', params.status);
+  if (params?.assigned_user_id !== undefined) queryParams.set('assigned_user_id', params.assigned_user_id.toString());
+  if (params?.search) queryParams.set('search', params.search);
+  
+  // CACHE BUSTING: Add timestamp to force fresh data
+  queryParams.set('_t', Date.now().toString());
+  
+  const res = await fetch(`${API_BASE}/elevenlabs?${queryParams.toString()}`, {
     credentials: 'include',
+    cache: 'no-store',
+    headers: {
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    }
   });
   if (!res.ok) throw new Error('Failed to fetch ElevenLabs keys');
   return res.json();

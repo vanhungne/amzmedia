@@ -105,14 +105,125 @@ CLOUD_API_KEY= os.getenv("CLOUDINARY_API_KEY", "878254454332296")
 CLOUD_SECRET = os.getenv("CLOUDINARY_API_SECRET", "3ozEXIzAYxTYK3J3rgwVXbX3aPU")
 # Bảo đảm EXE tìm thấy ffmpeg và browsers của Playwright
 os.environ["PATH"] = str(APP_DIR) + os.pathsep + os.environ.get("PATH", "")
+
+# ============================== Playwright Browser Installer ===============================
+def ensure_playwright_browsers_installed(show_dialog=False):
+    """
+    Kiểm tra và tự động cài đặt Playwright browsers nếu chưa có.
+    Hàm này được gọi khi app khởi động để đảm bảo browsers luôn sẵn sàng.
+    
+    Args:
+        show_dialog: Nếu True, hiển thị dialog box khi cài đặt (chỉ dùng khi GUI đã sẵn sàng)
+    """
+    try:
+        # Thử import playwright
+        from playwright.sync_api import sync_playwright
+        
+        # Thử khởi động chromium để kiểm tra
+        with sync_playwright() as p:
+            try:
+                browser = p.chromium.launch(headless=True)
+                browser.close()
+                print("[OK] Playwright browsers are ready!")
+                return True
+            except Exception as launch_error:
+                print(f"[WARNING] Playwright browsers not found: {launch_error}")
+                print("[INFO] Installing Playwright browsers...")
+                
+                # Hiển thị thông báo nếu có thể
+                if show_dialog:
+                    try:
+                        from PySide6.QtWidgets import QMessageBox, QApplication
+                        if QApplication.instance():
+                            msg = QMessageBox()
+                            msg.setIcon(QMessageBox.Information)
+                            msg.setWindowTitle("First Time Setup")
+                            msg.setText("Installing required browser components...\n\nThis will only happen once and may take a few minutes.\n\nPlease wait...")
+                            msg.setStandardButtons(QMessageBox.NoButton)
+                            msg.show()
+                            QApplication.processEvents()
+                    except:
+                        pass
+                
+                # Cài đặt browsers
+                try:
+                    result = subprocess.run(
+                        [sys.executable, "-m", "playwright", "install", "chromium"],
+                        capture_output=True,
+                        text=True,
+                        timeout=300  # 5 minutes timeout
+                    )
+                    
+                    if result.returncode == 0:
+                        print("[OK] Playwright browsers installed successfully!")
+                        
+                        # Thông báo thành công
+                        if show_dialog:
+                            try:
+                                from PySide6.QtWidgets import QMessageBox, QApplication
+                                if QApplication.instance():
+                                    QMessageBox.information(None, "Setup Complete", 
+                                        "Browser components installed successfully!\n\nThe application is now ready to use.")
+                            except:
+                                pass
+                        return True
+                    else:
+                        print(f"[ERROR] Failed to install browsers: {result.stderr}")
+                        
+                        # Thông báo lỗi
+                        if show_dialog:
+                            try:
+                                from PySide6.QtWidgets import QMessageBox, QApplication
+                                if QApplication.instance():
+                                    QMessageBox.warning(None, "Setup Failed", 
+                                        f"Failed to install browser components.\n\nPlease run:\nplaywright install\n\nError: {result.stderr}")
+                            except:
+                                pass
+                        return False
+                except subprocess.TimeoutExpired:
+                    print("[ERROR] Browser installation timed out!")
+                    return False
+                except Exception as install_error:
+                    print(f"[ERROR] Installation error: {install_error}")
+                    return False
+                    
+    except ImportError:
+        print("[WARNING] Playwright not installed!")
+        return False
+    except Exception as e:
+        print(f"[ERROR] Unexpected error checking Playwright: {e}")
+        return False
+
 # Khi chạy dạng đóng gói (PyInstaller), trỏ Playwright tới folder browsers đi kèm
 try:
+    # Thử nhiều vị trí có thể chứa browsers
     base = Path(getattr(sys, "_MEIPASS", APP_DIR))
-    mp = base / "ms-playwright"
-    if mp.exists():
-        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(mp))
-except Exception:
-    pass
+    
+    # Thứ tự ưu tiên tìm browsers:
+    # 1. _internal/ms-playwright (PyInstaller bundle - trong folder dist)
+    # 2. ms-playwright (PyInstaller bundle - trong temp _MEIPASS)
+    # 3. _external/ms-playwright (manual copy - bên cạnh exe)
+    
+    possible_paths = [
+        APP_DIR / "_internal" / "ms-playwright",   # Trong folder dist/_internal
+        base / "ms-playwright",                     # Trong temp _MEIPASS
+        APP_DIR / "_external" / "ms-playwright",   # Manual copy (fallback)
+    ]
+    
+    for mp in possible_paths:
+        if mp.exists():
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(mp)
+            print(f"[OK] Found Playwright browsers at: {mp}")
+            break
+    else:
+        print("[INFO] Playwright browsers not bundled, will download on first use")
+        
+except Exception as e:
+    print(f"[WARNING] Error checking Playwright browsers: {e}")
+
+# Kiểm tra Playwright browsers khi app khởi động (silent check, GUI dialog sẽ được gọi sau)
+print("[INFO] Checking Playwright browsers...")
+_playwright_ready = ensure_playwright_browsers_installed(show_dialog=False)
 SETTINGS_FILE = APP_DIR / "vgp_settings.json"
 
 # ============================== Cookie utils ===============================

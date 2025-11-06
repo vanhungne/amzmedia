@@ -3,14 +3,28 @@ import { requireAdmin } from '@/lib/middleware';
 import { getDb } from '@/lib/db';
 import sql from 'mssql';
 
+// Disable caching for this route
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 /**
  * GET /api/elevenlabs
  * Get all ElevenLabs API keys (Admin only)
+ * Query params: page, limit, status, assigned_user_id, search
  */
 async function getElevenLabsKeys(req: NextRequest) {
   try {
+    const { searchParams } = new URL(req.url);
+    const page = parseInt(searchParams.get('page') || '1');
+    const limit = parseInt(searchParams.get('limit') || '50');
+    const status = searchParams.get('status');
+    const assignedUserId = searchParams.get('assigned_user_id');
+    const search = searchParams.get('search');
+    const offset = (page - 1) * limit;
+    
     const db = await getDb();
-    const result = await db.request().query(`
+    
+    let query = `
       SELECT 
         k.[id],
         k.[api_key],
@@ -27,10 +41,118 @@ async function getElevenLabsKeys(req: NextRequest) {
       FROM [dbo].[elevenlabs_keys] k
       LEFT JOIN [dbo].[users] u ON k.[assigned_user_id] = u.[id]
       LEFT JOIN [dbo].[users] c ON k.[created_by] = c.[id]
-      ORDER BY k.[created_at] DESC
-    `);
+      WHERE 1=1
+    `;
     
-    return NextResponse.json({ keys: result.recordset });
+    const request = db.request();
+    
+    // Filter by status
+    if (status) {
+      query += ` AND k.[status] = @status`;
+      request.input('status', sql.NVarChar(50), status);
+    }
+    
+    // Filter by assigned user
+    if (assignedUserId) {
+      const userId = parseInt(assignedUserId);
+      if (userId === 0) {
+        // Unassigned keys
+        query += ` AND k.[assigned_user_id] IS NULL`;
+      } else {
+        query += ` AND k.[assigned_user_id] = @assigned_user_id`;
+        request.input('assigned_user_id', sql.Int, userId);
+      }
+    }
+    
+    // Search by name or API key
+    if (search) {
+      query += ` AND (k.[name] LIKE @search OR k.[api_key] LIKE @search)`;
+      request.input('search', sql.NVarChar(500), `%${search}%`);
+    }
+    
+    query += ` ORDER BY k.[created_at] DESC
+      OFFSET @offset ROWS
+      FETCH NEXT @limit ROWS ONLY
+    `;
+    
+    request
+      .input('offset', sql.Int, offset)
+      .input('limit', sql.Int, limit);
+    
+    const result = await request.query(query);
+    
+    // Get total count with same filters
+    let countQuery = `SELECT COUNT(*) as total FROM [dbo].[elevenlabs_keys] k WHERE 1=1`;
+    const countRequest = db.request();
+    
+    if (status) {
+      countQuery += ` AND k.[status] = @status`;
+      countRequest.input('status', sql.NVarChar(50), status);
+    }
+    
+    if (assignedUserId) {
+      const userId = parseInt(assignedUserId);
+      if (userId === 0) {
+        countQuery += ` AND k.[assigned_user_id] IS NULL`;
+      } else {
+        countQuery += ` AND k.[assigned_user_id] = @assigned_user_id`;
+        countRequest.input('assigned_user_id', sql.Int, userId);
+      }
+    }
+    
+    if (search) {
+      countQuery += ` AND (k.[name] LIKE @search OR k.[api_key] LIKE @search)`;
+      countRequest.input('search', sql.NVarChar(500), `%${search}%`);
+    }
+    
+    const countResult = await countRequest.query(countQuery);
+    const total = countResult.recordset[0].total;
+    
+    // Get summary stats (total, active, assigned, unassigned)
+    // ALWAYS get full stats from entire table, not filtered
+    // This query should return the TOTAL count from the entire table regardless of filters
+    const statsQuery = `
+      SELECT 
+        COUNT(*) as total,
+        ISNULL(SUM(CASE WHEN [status] = 'active' THEN 1 ELSE 0 END), 0) as active,
+        ISNULL(SUM(CASE WHEN [assigned_user_id] IS NOT NULL THEN 1 ELSE 0 END), 0) as assigned,
+        ISNULL(SUM(CASE WHEN [assigned_user_id] IS NULL AND [status] = 'active' THEN 1 ELSE 0 END), 0) as unassigned
+      FROM [dbo].[elevenlabs_keys]
+    `;
+    
+    console.log('[ElevenLabs API] Getting full stats from entire table (no filters)');
+    const statsResult = await db.request().query(statsQuery);
+    
+    // Ensure stats are numbers, not null
+    const stats = statsResult.recordset[0] || {};
+    const finalStats = {
+      total: parseInt(stats.total) || 0,
+      active: parseInt(stats.active) || 0,
+      assigned: parseInt(stats.assigned) || 0,
+      unassigned: parseInt(stats.unassigned) || 0
+    };
+    
+    console.log('[ElevenLabs API] Full stats:', finalStats);
+    
+    const response = NextResponse.json({
+      keys: result.recordset,
+      pagination: {
+        total,
+        page,
+        limit,
+        offset,
+        hasMore: offset + limit < total,
+        totalPages: Math.ceil(total / limit)
+      },
+      stats: finalStats
+    });
+    
+    // DISABLE ALL CACHING
+    response.headers.set('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+    response.headers.set('Pragma', 'no-cache');
+    response.headers.set('Expires', '0');
+    
+    return response;
   } catch (error: any) {
     console.error('Get ElevenLabs keys error:', error);
     return NextResponse.json(
