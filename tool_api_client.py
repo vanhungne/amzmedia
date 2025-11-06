@@ -7,6 +7,17 @@ import requests
 from typing import Optional, Dict, List
 import json
 import platform
+import sys
+
+# Fix encoding for Windows console
+if sys.platform == "win32":
+    try:
+        import codecs
+        if hasattr(sys.stdout, 'buffer'):
+            sys.stdout = codecs.getwriter("utf-8")(sys.stdout.buffer, errors="replace")
+            sys.stderr = codecs.getwriter("utf-8")(sys.stderr.buffer, errors="replace")
+    except Exception:
+        pass  # IDE environment, skip encoding fix
 
 def get_device_id() -> str:
     """
@@ -472,6 +483,45 @@ class WorkFlowAPIClient:
                     return gemini_keys
             
             print(f"❌ Failed to get Gemini keys: {response.json().get('error', 'Unknown error')}")
+            return []
+            
+        except Exception as e:
+            print(f"❌ API Error: {e}")
+            return []
+    
+    def get_openai_keys(self) -> List[Dict]:
+        """
+        Get all active OpenAI (ChatGPT) API keys from server (shared by all users)
+        Returns list of active OpenAI keys for prompt generation
+        """
+        if not self.token:
+            print("❌ Not authenticated. Call authenticate() first.")
+            return []
+        
+        try:
+            response = requests.get(
+                f"{self.base_url}/api/tool/openai",
+                headers={"Authorization": f"Bearer {self.token}"},
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('success'):
+                    keys = data.get('keys', [])
+                    print(f"✅ Loaded {len(keys)} OpenAI API keys from server")
+                    
+                    # Log activity
+                    self.log_activity(
+                        action='load_openai_keys',
+                        category='api',
+                        details={'key_count': len(keys)},
+                        status='success'
+                    )
+                    
+                    return keys
+            
+            print(f"❌ Failed to get OpenAI keys: {response.json().get('error', 'Unknown error')}")
             return []
             
         except Exception as e:

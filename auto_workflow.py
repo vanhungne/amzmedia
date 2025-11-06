@@ -109,15 +109,13 @@ class AutoWorkflowOrchestrator(QObject):
         print(f"[AUTO WORKFLOW] Script location: {script_file}")
         print(f"[AUTO WORKFLOW] Parent directory: {base_dir}")
         
-        # Create project folder (named after project or script) at SAME LEVEL as script
-        # Always create a folder chứa cả 3 subfolders voice/image/video
-        if hasattr(self.project, 'name') and self.project.name:
-            project_folder_name = self.project.name
-        else:
-            project_folder_name = script_file.stem  # Use script name if no project name
+        # Create project folder (named after script) at SAME LEVEL as script
+        # Always create a folder named after the script (e.g., LD280)
+        # It will contain 3 subfolders: voice/image/video
+        project_folder_name = script_file.stem
         
         project_folder = base_dir / project_folder_name
-        project_folder.mkdir(exist_ok=True)
+        project_folder.mkdir(parents=True, exist_ok=True)
         print(f"[AUTO WORKFLOW] Created project folder: {project_folder}")
         
         # Subdirectories inside project folder
@@ -125,9 +123,9 @@ class AutoWorkflowOrchestrator(QObject):
         image_dir = project_folder / "image"
         video_dir = project_folder / "video"
         
-        voice_dir.mkdir(exist_ok=True)
-        image_dir.mkdir(exist_ok=True)
-        video_dir.mkdir(exist_ok=True)
+        voice_dir.mkdir(parents=True, exist_ok=True)
+        image_dir.mkdir(parents=True, exist_ok=True)
+        video_dir.mkdir(parents=True, exist_ok=True)
         
         # Update project paths
         self.project.voice_output = str(voice_dir)

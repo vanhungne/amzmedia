@@ -12,7 +12,8 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QTextEdit, QCheckBox, QSpinBox, QProgressBar,
     QScrollArea, QFrame, QLineEdit, QFileDialog, QMessageBox, QComboBox,
     QDialog, QGridLayout, QGraphicsDropShadowEffect, QSizePolicy, QTabWidget,
-    QGroupBox, QSlider, QToolButton, QMenu, QButtonGroup, QRadioButton
+    QGroupBox, QSlider, QToolButton, QMenu, QButtonGroup, QRadioButton,
+    QProgressDialog
 )
 from PySide6.QtCore import Qt, Signal, QThread, QSize, QPropertyAnimation, QEasingCurve, QPoint, QRect, QTimer
 from PySide6.QtGui import QPixmap, QPalette, QColor, QFont, QMouseEvent, QPainter, QPen, QCursor, QIcon
@@ -192,10 +193,17 @@ def crop_to_16_9(pixmap: QPixmap, target_width: int, target_height: int) -> QPix
     return cropped.scaled(target_width, target_height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
 
 # ==================== GROQ AI SCRIPT ANALYSIS ====================
-def analyze_script_with_groq(script: str, num_parts: int, groq_api_key: str) -> List[str]:
+def analyze_script_with_groq(script: str, num_parts: int, groq_api_key: str, custom_system_prompt: str = "") -> List[str]:
     """
     Gửi script đến Groq API để phân tích và tạo prompts theo quy tắc.
-    Returns: List các prompts đã được tạo ra.
+    
+    Args:
+        script: Kịch bản cần phân tích
+        num_parts: Số lượng prompts cần tạo
+        groq_api_key: API key của Groq
+        custom_system_prompt: System prompt tùy biến từ Project (nếu có)
+    
+    Returns: List các prompts đã được tạo ra (giới hạn theo num_parts)
     """
     if not requests:
         raise Exception("requests library not installed")
@@ -203,8 +211,8 @@ def analyze_script_with_groq(script: str, num_parts: int, groq_api_key: str) -> 
     if not groq_api_key or not groq_api_key.strip():
         raise Exception("Groq API key is empty")
     
-    # System prompt với quy tắc chi tiết
-    system_prompt = """Bạn là GPT chuyên xử lý các kịch bản dài bằng tiếng Anh để phục vụ sản xuất video cảm xúc dành cho khán giả YouTube tại Mỹ.
+    # System prompt mặc định - chỉ dùng khi Project không có custom prompt
+    default_system_prompt = """Bạn là GPT chuyên xử lý các kịch bản dài bằng tiếng Anh để phục vụ sản xuất video cảm xúc dành cho khán giả YouTube tại Mỹ.
 
 Quy trình tự động xử lý như sau:
 
@@ -239,8 +247,11 @@ VÍ DỤ FORMAT OUTPUT:
 Ultra-realistic photo, 16:9. A woman (fair skin, wearing elegant navy blue dress, blonde wavy hair) standing confidently in a bright modern living room, looking at a man (tan skin, wearing casual grey sweater, brown hair) who is angrily pointing at her with raised voice. 3 neighbors in the background (varied appearances) watching with judgmental expressions, some whispering. Natural daylight streaming through large windows, contemporary furniture, high contrast lighting.
 
 Ultra-realistic photo, 16:9. A woman (fair skin, wearing elegant navy blue dress, blonde wavy hair) calmly walking away while a man (tan skin, wearing casual grey sweater, brown hair) continues shouting behind her with clenched fists. 4 onlookers (varied appearances) in background, some shaking heads, others recording with phones. Bright outdoor setting, modern apartment courtyard, sharp focus on main characters."""
-
-    user_prompt = f"Hãy phân tích kịch bản sau và chia thành {num_parts} phần, tạo prompt cho mỗi phần theo đúng quy tắc trên:\n\n{script}"
+    
+    # Use custom system prompt from Project if provided, otherwise use default
+    system_prompt = custom_system_prompt.strip() if custom_system_prompt and custom_system_prompt.strip() else default_system_prompt
+    
+    user_prompt = f"Hãy phân tích kịch bản sau và chia thành CHÍNH XÁC {num_parts} phần, tạo prompt cho mỗi phần theo đúng quy tắc trên.\n\nQUAN TRỌNG: Chỉ trả về ĐÚNG {num_parts} prompts, không nhiều hơn, không ít hơn.\n\n{script}"
     
     # Call Groq API
     headers = {
@@ -307,12 +318,110 @@ Ultra-realistic photo, 16:9. A woman (fair skin, wearing elegant navy blue dress
         # Return final_prompts, but if empty, return all prompts as fallback
         if not final_prompts:
             print("[WARNING] No prompts passed filter, returning all parsed prompts")
-            return prompts
+            final_prompts = prompts
+        
+        # ⚠️ QUAN TRỌNG: Giới hạn số lượng prompts theo num_parts
+        if len(final_prompts) > num_parts:
+            print(f"[LIMIT] AI trả về {len(final_prompts)} prompts, giới hạn về {num_parts} như yêu cầu")
+            final_prompts = final_prompts[:num_parts]
+        elif len(final_prompts) < num_parts:
+            print(f"[WARNING] AI chỉ trả về {len(final_prompts)} prompts, ít hơn {num_parts} yêu cầu")
         
         return final_prompts
     
     except Exception as e:
         raise Exception(f"Groq API Error: {str(e)}")
+
+def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str, custom_system_prompt: str = "", model: str = "gpt-5") -> List[str]:
+    """
+    Use OpenAI Chat Completions (ChatGPT) to analyze the script and generate image prompts.
+    """
+    if not requests:
+        raise Exception("requests library not installed")
+    if not openai_api_key or not openai_api_key.strip():
+        raise Exception("OpenAI API key is empty")
+
+    default_system_prompt = (
+        "You are an expert at creating high quality, cinematic image generation prompts. "
+        "Split the user script into exactly {x} parts and produce one concise English prompt per part. "
+        "Follow these rules: 16:9 ultra-realistic photo; two main characters interacting; maintain clothing and physical traits across prompts (no 'same outfit' wording); put appearance inside parentheses; no emerald green eyes; do not add Vietnamese translations; output prompts only, one per line, separated by a blank line."
+    )
+    system_prompt = custom_system_prompt.strip() if custom_system_prompt and custom_system_prompt.strip() else default_system_prompt
+    system_prompt = system_prompt.replace("{x}", str(num_parts))
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Please split into exactly {num_parts} prompts and return only the prompts.\n\nScript:\n{script}"},
+    ]
+
+    headers = {
+        "Authorization": f"Bearer {openai_api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.7,
+    }
+
+    try:
+        resp = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"].strip()
+
+        # Split into prompts by blank lines first, then by newlines
+        if "\n\n" in content:
+            prompts = [p.strip() for p in content.split("\n\n") if p.strip()]
+        else:
+            prompts = [p.strip() for p in content.split("\n") if p.strip()]
+
+        # Basic filtering similar to Groq path
+        final_prompts: List[str] = []
+        for p in prompts:
+            if any(p.startswith(x) for x in ["Phân cảnh", "Scene", "Part ", "Prompt ", "**"]):
+                continue
+            if len(p) < 30:
+                continue
+            if not any(keyword in p.lower() for keyword in ["tóm tắt:", "dịch:", "bản dịch:"]):
+                final_prompts.append(p)
+
+        if not final_prompts:
+            final_prompts = prompts
+
+        if len(final_prompts) > num_parts:
+            final_prompts = final_prompts[:num_parts]
+        return final_prompts
+    except Exception as e:
+        raise Exception(f"OpenAI error: {e}")
+
+def analyze_script_with_gemini_text(script: str, num_parts: int, gemini_api_key: str, custom_system_prompt: str = "", model: str = "gemini-2.5-pro") -> List[str]:
+    if not gemini_api_key or not gemini_api_key.strip():
+        raise Exception("Gemini API key is empty")
+    client = genai.Client(api_key=gemini_api_key)
+    system_prompt = (
+        "You are an expert at creating high quality cinematic image prompts. "
+        "Split script into exactly {x} parts and output prompts only, one per line, with blank line between."
+    )
+    system_prompt = (custom_system_prompt.strip() or system_prompt).replace("{x}", str(num_parts))
+    resp = client.models.generate_content(
+        model=model,
+        contents=[
+            {"role": "user", "parts": [
+                {"text": system_prompt},
+                {"text": f"Script:\n{script}"}
+            ]}
+        ],
+        config=GenerateContentConfig(response_modalities=[Modality.TEXT])
+    )
+    text = (getattr(resp, "text", None) or "").strip()
+    if "\n\n" in text:
+        parts = [p.strip() for p in text.split("\n\n") if p.strip()]
+    else:
+        parts = [p.strip() for p in text.split("\n") if p.strip()]
+    if len(parts) > num_parts:
+        parts = parts[:num_parts]
+    return parts
 
 # ==================== SETTINGS MANAGER ====================
 class SettingsManager:
@@ -421,6 +530,65 @@ def ai_fix_prompt(client: genai.Client, raw_prompt: str) -> str:
     )
     text = getattr(resp, "text", None) or ""
     return text.strip() or raw_prompt
+
+def convert_image_prompt_to_video(client: genai.Client, image_prompt: str) -> str:
+    """
+    Convert image generation prompt to video generation prompt using Gemini AI.
+    
+    Args:
+        client: Gemini AI client
+        image_prompt: Original image generation prompt
+    
+    Returns:
+        Video-optimized prompt
+    """
+    system_hint = """You are an expert at converting image generation prompts to video generation prompts.
+
+Your task:
+- Take an image prompt and convert it to a VIDEO prompt
+- Add MOTION, CAMERA MOVEMENT, and DYNAMIC ELEMENTS
+- Keep the VISUAL DETAILS from the original prompt
+- Make it CINEMATIC and engaging for video
+- Output ONLY the video prompt, no explanations
+
+Example conversions:
+
+Image: "A serene mountain landscape with snow-capped peaks, blue sky, photorealistic"
+Video: "Smooth aerial drone shot flying over serene mountain landscape with snow-capped peaks against blue sky, camera slowly panning right, gentle wind moving clouds, cinematic 4K"
+
+Image: "Portrait of a woman with long blonde hair, elegant dress, studio lighting"
+Video: "Cinematic portrait shot of woman with long blonde hair in elegant dress, slow push-in camera movement, hair gently flowing, soft studio lighting with subtle shadows shifting, 4K photorealistic"
+
+Image: "A golden retriever sitting in a park"
+Video: "Medium shot of golden retriever sitting alertly in grassy park, dog turns head slightly, tail wagging gently, camera slowly dollying forward, natural daylight, cinematic depth of field"
+
+Rules:
+1. Always add camera movement (pan, tilt, dolly, zoom, aerial, etc.)
+2. Add natural motion to subjects (wind, breathing, subtle movements)
+3. Keep all visual details from original prompt
+4. Make it cinematic and professional
+5. Output ONLY the video prompt"""
+
+    try:
+        resp = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[{"role": "user", "parts": [{"text": system_hint}, {"text": f"Image Prompt: {image_prompt}\n\nVideo Prompt:"}]}],
+            config=GenerateContentConfig(response_modalities=[Modality.TEXT])
+        )
+        video_prompt = getattr(resp, "text", None) or ""
+        video_prompt = video_prompt.strip()
+        
+        # Remove any explanatory text if AI added it
+        if "Video:" in video_prompt or "Video Prompt:" in video_prompt:
+            video_prompt = video_prompt.split("Video:")[-1].split("Video Prompt:")[-1].strip()
+        
+        return video_prompt if video_prompt else image_prompt
+    except Exception as e:
+        print(f"[CONVERT PROMPT] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fallback: return original prompt if conversion fails
+        return image_prompt
 
 def describe_image_for_video(client: genai.Client, image_path: str) -> str:
     """Use Gemini Vision to describe image and create video prompt"""
@@ -784,13 +952,14 @@ class ImageLightbox(QDialog):
 # ==================== SCRIPT IMPORT DIALOG ====================
 class ScriptImportDialog(QDialog):
     """Dialog to import script and analyze with Groq AI"""
-    def __init__(self, parent=None, groq_keys: List[str] = None):
+    def __init__(self, parent=None, groq_keys: List[str] = None, custom_system_prompt: str = ""):
         super().__init__(parent)
         self.setWindowTitle("📄 Import Script & Auto Generate")
         self.setModal(True)
         self.resize(900, 700)
         
         self.groq_keys = groq_keys or []
+        self.custom_system_prompt = custom_system_prompt  # System prompt từ Project
         self.result_prompts = []
         
         layout = QVBoxLayout(self)
@@ -962,7 +1131,8 @@ class ScriptImportDialog(QDialog):
             try:
                 # Use first Groq key
                 groq_key = self.groq_keys[0]
-                prompts = analyze_script_with_groq(script, num_parts, groq_key)
+                # Pass custom system prompt from Project
+                prompts = analyze_script_with_groq(script, num_parts, groq_key, self.custom_system_prompt)
                 
                 # Success
                 QTimer.singleShot(0, lambda: self.on_success(prompts))
@@ -1661,110 +1831,18 @@ class ImageGeneratorTab(QWidget):
     script_analysis_success = Signal(list)  # List[str] of prompts
     script_analysis_error = Signal(str)     # Error message
     
-    def __init__(self, parent=None, api_client=None):
+    def __init__(self, parent=None, api_client=None, project_manager=None, main_window=None):
         super().__init__(parent)
         
         self.api_client = api_client
+        self.project_manager = project_manager  # Access to ProjectManager for script_template
+        self.main_window = main_window  # Direct reference to GenVideoPro MainWindow
         self.settings = SettingsManager(SETTINGS_PATH)
         
         # Theme - Match Voice App Style
         self.setStyleSheet(f"""
             QWidget {{
                 background-color: {Theme.BG_PRIMARY};
-            }}
-            QLabel {{
-                color: {Theme.TEXT_PRIMARY};
-            }}
-            QTextEdit, QLineEdit {{
-                background-color: white;
-                color: {Theme.TEXT_PRIMARY};
-                border: 2px solid #cbd5e1;
-                border-radius: 5px;
-                padding: 6px 10px;
-                font-size: 9pt;
-            }}
-            QTextEdit:focus, QLineEdit:focus {{
-                border-color: {Theme.PRIMARY};
-            }}
-            QComboBox {{
-                background-color: white;
-                color: {Theme.TEXT_PRIMARY};
-                border: 2px solid #cbd5e1;
-                border-radius: 5px;
-                padding: 6px 10px;
-                font-size: 9pt;
-                min-height: 26px;
-            }}
-            QComboBox:hover {{
-                border-color: {Theme.PRIMARY};
-            }}
-            QComboBox:focus {{
-                border-color: {Theme.PRIMARY};
-            }}
-            QComboBox::drop-down {{
-                border: none;
-                padding-right: 10px;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: white;
-                color: {Theme.TEXT_PRIMARY};
-                selection-background-color: {Theme.PRIMARY};
-                selection-color: white;
-                border: 2px solid #cbd5e1;
-            }}
-            QSpinBox {{
-                background-color: white;
-                color: {Theme.TEXT_PRIMARY};
-                border: 2px solid #cbd5e1;
-                border-radius: 5px;
-                padding: 6px 10px;
-                min-height: 26px;
-                font-size: 9pt;
-            }}
-            QSpinBox:hover {{
-                border-color: {Theme.PRIMARY};
-            }}
-            QSpinBox:focus {{
-                border-color: {Theme.PRIMARY};
-            }}
-            QCheckBox {{
-                color: {Theme.TEXT_PRIMARY};
-                spacing: 8px;
-                font-size: 9pt;
-            }}
-            QCheckBox::indicator {{
-                width: 18px;
-                height: 18px;
-                border-radius: 4px;
-                border: 2px solid #94a3b8;
-                background-color: white;
-            }}
-            QCheckBox::indicator:hover {{
-                border-color: {Theme.PRIMARY};
-            }}
-            QCheckBox::indicator:checked {{
-                background-color: {Theme.PRIMARY};
-                border-color: {Theme.PRIMARY};
-                image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTIiIGhlaWdodD0iMTIiIHZpZXdCb3g9IjAgMCAxMiAxMiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KICA8cGF0aCBkPSJNMTAgM0w0LjUgOC41TDIgNiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPC9zdmc+);
-            }}
-            QCheckBox::indicator:checked:hover {{
-                background-color: {Theme.PRIMARY_HOVER};
-            }}
-            QGroupBox {{
-                background-color: white;
-                border: 2px solid {Theme.BORDER};
-                border-radius: 8px;
-                margin-top: 12px;
-                font-weight: 600;
-                font-size: 10pt;
-                padding-top: 12px;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                left: 12px;
-                top: 4px;
-                color: {Theme.TEXT_PRIMARY};
             }}
         """)
         
@@ -1775,7 +1853,7 @@ class ImageGeneratorTab(QWidget):
         self.rotator = KeyRotator([DEFAULT_KEY])
         
         self.output_dir = Path(self.settings.get("output_dir", str(DEFAULT_OUTPUT_DIR)))
-        self.output_dir.mkdir(exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         
         self.worker = None
         
@@ -1878,6 +1956,87 @@ class ImageGeneratorTab(QWidget):
         self.model_cb.setMinimumWidth(360)
         basic_layout.addWidget(self.model_cb)
         
+        # Prompt AI Provider & Model in a grid layout
+        ai_grid = QGridLayout()
+        ai_grid.setSpacing(12)
+        ai_grid.setHorizontalSpacing(20)
+        ai_grid.setVerticalSpacing(8)
+        
+        # Prompt AI Provider
+        provider_label = QLabel("Prompt AI Provider")
+        provider_label.setStyleSheet(f"color: {Theme.TEXT_PRIMARY}; font-weight: 600;")
+        ai_grid.addWidget(provider_label, 0, 0)
+        
+        self.provider_cb = QComboBox()
+        self.provider_cb.addItems(["Groq", "ChatGPT", "Gemini"])
+        self.provider_cb.setMinimumWidth(250)
+        self.provider_cb.setStyleSheet(f"""
+            QComboBox {{
+                background: {Theme.BG_SECONDARY};
+                color: {Theme.TEXT_PRIMARY};
+                border: 1px solid {Theme.BORDER};
+                border-radius: 8px;
+                padding: 8px 12px;
+                font-size: 14px;
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                padding-right: 8px;
+            }}
+            QComboBox:hover {{
+                background: {Theme.BG_TERTIARY};
+                border-color: {Theme.PRIMARY};
+            }}
+            QComboBox QAbstractItemView {{
+                background: {Theme.BG_SECONDARY};
+                color: {Theme.TEXT_PRIMARY};
+                selection-background-color: {Theme.PRIMARY};
+                border: 1px solid {Theme.BORDER};
+                border-radius: 4px;
+            }}
+        """)
+        self.provider_cb.currentTextChanged.connect(self.on_prompt_provider_change)
+        ai_grid.addWidget(self.provider_cb, 1, 0)
+        
+        # Prompt Model (depends on provider)
+        model_label2 = QLabel("Prompt Model")
+        model_label2.setStyleSheet(f"color: {Theme.TEXT_PRIMARY}; font-weight: 600;")
+        ai_grid.addWidget(model_label2, 0, 1)
+        
+        self.provider_model_cb = QComboBox()
+        self.provider_model_cb.setMinimumWidth(250)
+        self.provider_model_cb.setStyleSheet(f"""
+            QComboBox {{
+                background: {Theme.BG_SECONDARY};
+                color: {Theme.TEXT_PRIMARY};
+                border: 1px solid {Theme.BORDER};
+                border-radius: 8px;
+                padding: 8px 12px;
+                font-size: 14px;
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                padding-right: 8px;
+            }}
+            QComboBox:hover {{
+                background: {Theme.BG_TERTIARY};
+                border-color: {Theme.PRIMARY};
+            }}
+            QComboBox QAbstractItemView {{
+                background: {Theme.BG_SECONDARY};
+                color: {Theme.TEXT_PRIMARY};
+                selection-background-color: {Theme.PRIMARY};
+                border: 1px solid {Theme.BORDER};
+                border-radius: 4px;
+            }}
+        """)
+        ai_grid.addWidget(self.provider_model_cb, 1, 1)
+        
+        # Initialize model options
+        self.on_prompt_provider_change(self.provider_cb.currentText())
+        
+        basic_layout.addLayout(ai_grid)
+        
         grid = QGridLayout()
         grid.setSpacing(12)
         grid.setVerticalSpacing(8)
@@ -1955,15 +2114,8 @@ class ImageGeneratorTab(QWidget):
         """)
         advanced_layout.addWidget(self.clear_before_cb)
         
-        self.auto_describe_cb = QCheckBox("🤖 Auto describe when sending to Video")
-        self.auto_describe_cb.setToolTip("Use AI Vision to automatically generate video prompts from images\nwhen sending to Image2Video tab\n(Default: ON ✓)")
-        self.auto_describe_cb.setStyleSheet(f"""
-            QCheckBox {{
-                font-weight: 600;
-                padding: 4px 0px;
-            }}
-        """)
-        advanced_layout.addWidget(self.auto_describe_cb)
+        # REMOVED: Auto describe checkbox - không dùng nữa
+        # self.auto_describe_cb = QCheckBox("🤖 Auto describe when sending to Video")
         
         advanced_layout.addStretch()
         
@@ -2179,6 +2331,9 @@ class ImageGeneratorTab(QWidget):
         self.output_edit.setText(s.get("output_dir", str(DEFAULT_OUTPUT_DIR)))
         self.model_cb.setCurrentText(s.get("model", IMAGEN4_ULTRA))
         self.on_model_change()
+        self.provider_cb.setCurrentText(s.get("prompt_ai_provider", "Groq"))
+        self.on_prompt_provider_change(self.provider_cb.currentText())
+        self.provider_model_cb.setCurrentText(s.get("prompt_ai_model", "llama-3.3-70b-versatile"))
         self.ar_cb.setCurrentText(s.get("aspect_ratio", "16:9"))
         self.size_cb.setCurrentText(s.get("image_size", "2K"))
         self.count_cb.setCurrentText(str(s.get("images", 4)))
@@ -2187,12 +2342,14 @@ class ImageGeneratorTab(QWidget):
         self.script_parts_spin.setValue(int(s.get("script_parts", 5)))
         self.auto_retry_cb.setChecked(bool(s.get("auto_retry", True)))
         self.clear_before_cb.setChecked(bool(s.get("clear_output_before_run", False)))
-        self.auto_describe_cb.setChecked(bool(s.get("auto_describe_for_video", True)))
+        # REMOVED: auto_describe_cb - không dùng nữa
         self.person_cb.setCurrentText(s.get("person_generation", "allow_adult"))
     
     def save_settings(self):
         self.settings.set("output_dir", self.output_edit.text().strip())
         self.settings.set("model", self.model_cb.currentText())
+        self.settings.set("prompt_ai_provider", self.provider_cb.currentText())
+        self.settings.set("prompt_ai_model", self.provider_model_cb.currentText())
         self.settings.set("aspect_ratio", self.ar_cb.currentText())
         self.settings.set("image_size", self.size_cb.currentText())
         self.settings.set("images", int(self.count_cb.currentText()))
@@ -2201,7 +2358,7 @@ class ImageGeneratorTab(QWidget):
         self.settings.set("script_parts", int(self.script_parts_spin.value()))
         self.settings.set("auto_retry", bool(self.auto_retry_cb.isChecked()))
         self.settings.set("clear_output_before_run", bool(self.clear_before_cb.isChecked()))
-        self.settings.set("auto_describe_for_video", bool(self.auto_describe_cb.isChecked()))
+        # REMOVED: auto_describe_for_video - không dùng nữa
         self.settings.set("person_generation", self.person_cb.currentText())
         
         try:
@@ -2355,6 +2512,46 @@ class ImageGeneratorTab(QWidget):
         if not file_path:
             return
         
+        # =============================================
+        # Create project output folders next to script
+        # Root: <script_dir>/<script_name>/
+        #   - image/
+        #   - video/
+        #   - voice/
+        # =============================================
+        try:
+            sp = Path(file_path)
+            script_dir = sp.parent
+            script_name = sp.stem  # e.g., LD280
+            project_root = script_dir / script_name
+            image_dir = project_root / "image"
+            video_dir = project_root / "video"
+            voice_dir = project_root / "voice"
+
+            # Create all folders
+            for d in (project_root, image_dir, video_dir, voice_dir):
+                d.mkdir(parents=True, exist_ok=True)
+
+            # Point Image Generator output to image folder
+            self.output_dir = image_dir
+            self.settings.set("output_dir", str(image_dir))
+
+            print(f"[SCRIPT IMPORT] Project root: {project_root}")
+            print(f"[SCRIPT IMPORT] Image folder:  {image_dir}")
+            print(f"[SCRIPT IMPORT] Video folder:  {video_dir}")
+            print(f"[SCRIPT IMPORT] Voice folder:  {voice_dir}")
+
+            # If main window is available, set Image-to-Video out dir to video folder
+            if self.main_window and hasattr(self.main_window, "edit_outdir"):
+                self.main_window.edit_outdir.setText(str(video_dir))
+                # Persist immediately
+                if hasattr(self.main_window, "save_settings"):
+                    self.main_window.save_settings()
+                print("[SCRIPT IMPORT] Set Image-to-Video out_dir in MainWindow")
+        except Exception as e:
+            print(f"[SCRIPT IMPORT] ⚠️ Failed to prepare project folders: {e}")
+            # Do not abort - continue with defaults
+        
         # Read script from file
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -2380,10 +2577,51 @@ class ImageGeneratorTab(QWidget):
                 print(f"[WORKER] Script length: {len(script)} chars")
                 print(f"[WORKER] Script preview: {script[:200]}...")
                 
-                groq_key = groq_keys[0]
-                print(f"[WORKER] Using Groq key: {groq_key[:20]}...")
+                # Get custom system prompt from current project (if available)
+                custom_prompt = ""
+                if self.project_manager and self.project_manager.current_project:
+                    custom_prompt = self.project_manager.current_project.script_template or ""
+                    if custom_prompt:
+                        print(f"[WORKER] Using custom script_template from project: {self.project_manager.current_project.name}")
                 
-                prompts = analyze_script_with_groq(script, num_parts, groq_key)
+                provider = self.provider_cb.currentText()
+                print(f"[WORKER] Provider: {provider}")
+                
+                if provider == "ChatGPT" and self.api_client and self.api_client.is_authenticated():
+                    # Load OpenAI keys from server
+                    try:
+                        openai_keys = self.api_client.get_openai_keys()
+                        if not openai_keys:
+                            raise Exception("No OpenAI keys available on server")
+                        openai_key = (openai_keys[0].get('api_key') or '').strip()
+                        model_name = self.provider_model_cb.currentText() or "o3"
+                        print(f"[WORKER] Using ChatGPT ({model_name}) with key: {openai_key[:12]}...{openai_key[-6:]}")
+                        prompts = analyze_script_with_openai(script, num_parts, openai_key, custom_prompt, model=model_name)
+                    except Exception as e:
+                        print(f"[WORKER] ChatGPT path failed: {e}")
+                        # Fallback to Groq if available
+                        groq_key = groq_keys[0]
+                        prompts = analyze_script_with_groq(script, num_parts, groq_key, custom_prompt)
+                elif provider == "Gemini":
+                    # Use current Gemini key (from rotator)
+                    gemini_key = None
+                    try:
+                        gemini_key = self.rotator.current()
+                    except Exception:
+                        pass
+                    if not gemini_key:
+                        print("[WORKER] No Gemini key loaded - cannot use Gemini provider, fallback to Groq")
+                        groq_key = groq_keys[0]
+                        prompts = analyze_script_with_groq(script, num_parts, groq_key, custom_prompt)
+                    else:
+                        model_name = self.provider_model_cb.currentText() or "gemini-2.5-pro"
+                        print(f"[WORKER] Using Gemini ({model_name})")
+                        prompts = analyze_script_with_gemini_text(script, num_parts, gemini_key, custom_prompt, model=model_name)
+                else:
+                    # Default Groq path
+                    groq_key = groq_keys[0]
+                    print(f"[WORKER] Using Groq (llama-3.3-70b) with key: {groq_key[:20]}...")
+                    prompts = analyze_script_with_groq(script, num_parts, groq_key, custom_prompt)
                 
                 print(f"[WORKER] Got {len(prompts)} prompts from AI")
                 
@@ -2518,64 +2756,69 @@ class ImageGeneratorTab(QWidget):
         self.generate_rows(failed_rows)
     
     def on_send_to_image2video(self):
-        """Chuyển tất cả ảnh đã generate thành công sang Image to Video tab"""
+        """Chuyển TẤT CẢ ảnh đã generate thành công sang Image to Video tab"""
         # Collect all successfully generated images
         successful_images = []
         
-        for row in self.rows:
+        print(f"[SEND TO VIDEO] Checking {len(self.rows)} rows...")
+        
+        for idx, row in enumerate(self.rows):
             # Check if row has completed (has saved images)
             if hasattr(row, 'saved_paths') and row.saved_paths:
-                prompt = row.get_prompt()
+                # Get prompt from text editor
+                prompt = row.txt.toPlainText().strip() if hasattr(row, 'txt') else ""
+                if not prompt:
+                    prompt = f"Image {idx + 1}"  # Fallback prompt
+                
                 # Get the first image as start image
                 first_image = str(row.saved_paths[0])
-                successful_images.append({
-                    'prompt': prompt,
-                    'image': first_image
-                })
+                
+                # Verify image exists
+                if os.path.exists(first_image):
+                    successful_images.append({
+                        'prompt': prompt,
+                        'image': first_image
+                    })
+                    print(f"[SEND TO VIDEO] ✅ Row {idx + 1}: {first_image}")
+                else:
+                    print(f"[SEND TO VIDEO] ⚠️ Row {idx + 1}: Image not found: {first_image}")
+            else:
+                status = "unknown"
+                if hasattr(row, 'status_badge') and row.status_badge:
+                    status = row.status_badge.text()
+                print(f"[SEND TO VIDEO] ⚠️ Row {idx + 1}: No saved images (status: {status})")
+        
+        print(f"[SEND TO VIDEO] Total successful images: {len(successful_images)}")
         
         if not successful_images:
             QMessageBox.information(
                 self, 
                 "No Images", 
                 "No successfully generated images to send.\n\n"
-                "Please generate some images first."
+                "Please generate some images first.\n\n"
+                f"Checked {len(self.rows)} rows, none have completed images."
             )
             return
         
-        # Auto describe images if enabled
-        if self.auto_describe_cb.isChecked():
-            self.set_status("🤖 Auto describing images for video...")
-            
-            def describe_worker():
-                for i, img_data in enumerate(successful_images):
-                    try:
-                        api_key = self.rotator.current()
-                        client = genai.Client(api_key=api_key)
-                        video_prompt = describe_image_for_video(client, img_data['image'])
-                        if video_prompt and video_prompt != "A cinematic scene":
-                            img_data['prompt'] = video_prompt
-                        self.set_status(f"🤖 Described {i+1}/{len(successful_images)} images...")
-                    except Exception as e:
-                        print(f"Error describing image {i+1}: {e}")
-                        # Keep original prompt if error
-                
-                # Continue with sending to video after describing
-                QTimer.singleShot(0, lambda: self._finish_send_to_video(successful_images))
-            
-            threading.Thread(target=describe_worker, daemon=True).start()
-            return
-        
-        # If not auto-describing, send directly
+        # REMOVED: Auto-describe feature - không dùng nữa
+        # Gọi trực tiếp _finish_send_to_video
+        print("[SEND TO VIDEO] Calling _finish_send_to_video directly")
         self._finish_send_to_video(successful_images)
     
     def _finish_send_to_video(self, successful_images):
+        """Send all successful images to Image to Video tab"""
+        print(f"[FINISH SEND] _finish_send_to_video called with {len(successful_images)} images")
         
-        # Get parent (GenVideoPro MainWindow)
-        parent = self.parent()
-        while parent and not hasattr(parent, 'image_prompts'):
-            parent = parent.parent()
+        # Use direct reference to MainWindow if available, otherwise try to find parent
+        main_window = self.main_window
+        if not main_window:
+            # Fallback: Try to find parent
+            parent = self.parent()
+            while parent and not hasattr(parent, 'image_prompts'):
+                parent = parent.parent()
+            main_window = parent
         
-        if not parent:
+        if not main_window or not hasattr(main_window, 'image_prompts'):
             QMessageBox.warning(
                 self,
                 "Error",
@@ -2586,12 +2829,47 @@ class ImageGeneratorTab(QWidget):
         
         # Add to Image to Video tab
         try:
-            # Import dynamically to avoid circular imports
-            import sys
-            if 'GenVideoPro' in sys.modules:
-                from GenVideoPro import ImagePromptRow
-            else:
-                # Create ImagePromptRow inline if not available
+            print(f"[SEND TO VIDEO] Starting to add {len(successful_images)} images to queue...")
+            print(f"[SEND TO VIDEO] MainWindow type: {type(main_window)}")
+            print(f"[SEND TO VIDEO] Has image_prompts: {hasattr(main_window, 'image_prompts')}")
+            if hasattr(main_window, 'image_prompts'):
+                print(f"[SEND TO VIDEO] Current image_prompts count: {len(main_window.image_prompts)}")
+            
+            # Import ImagePromptRow from GenVideoPro
+            # NOTE: Check main_window type to get proper module name
+            ImagePromptRow = None
+            
+            # Try to get ImagePromptRow from main_window's class
+            if main_window:
+                try:
+                    main_window_class = type(main_window)
+                    main_window_module = main_window_class.__module__
+                    print(f"[SEND TO VIDEO] MainWindow module: {main_window_module}")
+                    
+                    # Import from the actual module
+                    import importlib
+                    genvideo_module = importlib.import_module(main_window_module)
+                    if hasattr(genvideo_module, 'ImagePromptRow'):
+                        ImagePromptRow = genvideo_module.ImagePromptRow
+                        print(f"[SEND TO VIDEO] ✅ Imported ImagePromptRow from {main_window_module}")
+                    else:
+                        print(f"[SEND TO VIDEO] ⚠️ Module {main_window_module} has no ImagePromptRow")
+                except Exception as e:
+                    print(f"[SEND TO VIDEO] ⚠️ Error importing from main window module: {e}")
+            
+            # Fallback: Try sys.modules
+            if not ImagePromptRow:
+                import sys
+                for module_name in ['GenVideoPro', '__main__']:
+                    if module_name in sys.modules:
+                        module = sys.modules[module_name]
+                        if hasattr(module, 'ImagePromptRow'):
+                            ImagePromptRow = module.ImagePromptRow
+                            print(f"[SEND TO VIDEO] ✅ Imported ImagePromptRow from {module_name}")
+                            break
+            
+            # Last resort: Create inline class
+            if not ImagePromptRow:
                 from dataclasses import dataclass
                 @dataclass
                 class ImagePromptRow:
@@ -2599,41 +2877,166 @@ class ImageGeneratorTab(QWidget):
                     start_image: str
                     status: str = "Pending"
                     video: str = ""
+                print("[SEND TO VIDEO] ⚠️ Created inline ImagePromptRow (fallback)")
+            
+            # Convert image prompts to video prompts using Gemini AI
+            print(f"[SEND TO VIDEO] Converting {len(successful_images)} image prompts to video prompts...")
+            
+            # Get Gemini API key from rotator
+            try:
+                api_key = self.rotator.current() if hasattr(self, 'rotator') and self.rotator else None
+                if api_key:
+                    print(f"[CONVERT PROMPT] Using Gemini API key: {api_key[:20]}...")
+                    client = genai.Client(api_key=api_key)
+                    
+                    for idx, img_data in enumerate(successful_images):
+                        original_prompt = img_data['prompt']
+                        print(f"[CONVERT PROMPT] Converting prompt {idx + 1}/{len(successful_images)}")
+                        print(f"[CONVERT PROMPT]   Original: {original_prompt[:80]}...")
+                        
+                        try:
+                            video_prompt = convert_image_prompt_to_video(client, original_prompt)
+                            img_data['prompt'] = video_prompt
+                            print(f"[CONVERT PROMPT]   Video: {video_prompt[:80]}...")
+                            print(f"[CONVERT PROMPT] ✅ Converted prompt {idx + 1}")
+                        except Exception as e:
+                            print(f"[CONVERT PROMPT] ⚠️ Error converting prompt {idx + 1}: {e}")
+                            # Keep original prompt if conversion fails
+                else:
+                    print("[CONVERT PROMPT] ⚠️ No Gemini API key available, using original prompts")
+            except Exception as e:
+                print(f"[CONVERT PROMPT] ⚠️ Error initializing Gemini client: {e}")
+                import traceback
+                traceback.print_exc()
             
             # Add all images to image_prompts list
-            for img_data in successful_images:
-                ipr = ImagePromptRow(
-                    prompt=img_data['prompt'], 
-                    start_image=img_data['image']
+            print(f"[SEND TO VIDEO] Adding {len(successful_images)} images to queue...")
+            added_count = 0
+            for idx, img_data in enumerate(successful_images):
+                print(f"[SEND TO VIDEO] Processing image {idx + 1}/{len(successful_images)}")
+                print(f"[SEND TO VIDEO]   Prompt: {img_data['prompt'][:50]}...")
+                print(f"[SEND TO VIDEO]   Image: {img_data['image']}")
+                
+                # Check if image file exists
+                if not os.path.exists(img_data['image']):
+                    print(f"[SEND TO VIDEO] ⚠️ Image not found: {img_data['image']}")
+                    continue
+                
+                try:
+                    ipr = ImagePromptRow(
+                        prompt=img_data['prompt'],  # Video-optimized prompt
+                        start_image=img_data['image']
+                    )
+                    main_window.image_prompts.append(ipr)
+                    added_count += 1
+                    print(f"[SEND TO VIDEO] ✅ Added image {idx + 1} to queue (total in queue: {len(main_window.image_prompts)})")
+                except Exception as e:
+                    print(f"[SEND TO VIDEO] ❌ Error adding image {idx + 1}: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            print(f"[SEND TO VIDEO] Added {added_count} images. Total in queue: {len(main_window.image_prompts)}")
+            
+            if added_count == 0:
+                QMessageBox.warning(
+                    self,
+                    "No Images",
+                    "No valid images found to send.\n\n"
+                    "Please ensure images are generated successfully."
                 )
-                parent.image_prompts.append(ipr)
+                return
             
             # Refresh the Image to Video table
-            if hasattr(parent, '_refresh_image_table'):
-                parent._refresh_image_table()
+            print("[SEND TO VIDEO] Refreshing table...")
+            if hasattr(main_window, '_refresh_image_table'):
+                try:
+                    main_window._refresh_image_table()
+                    print(f"[SEND TO VIDEO] ✅ Refreshed Image to Video table (rows: {main_window.tbl_img.rowCount()})")
+                    
+                    # Auto-tick all newly added items
+                    print("[SEND TO VIDEO] Auto-ticking all items for generation...")
+                    if hasattr(main_window, 'tbl_img'):
+                        ticked_count = 0
+                        for r in range(main_window.tbl_img.rowCount()):
+                            w = main_window.tbl_img.cellWidget(r, 0)
+                            if w and hasattr(w, '_cb') and w._cb:
+                                if not w._cb.isChecked():
+                                    w._cb.setChecked(True)
+                                    ticked_count += 1
+                        print(f"[SEND TO VIDEO] ✅ Auto-ticked {ticked_count} items")
+                except Exception as e:
+                    print(f"[SEND TO VIDEO] ❌ Error refreshing table: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print("[SEND TO VIDEO] ⚠️ MainWindow does not have _refresh_image_table method")
             
             # Switch to Image to Video tab
-            if hasattr(parent, 'tabs'):
-                # Find Image to Video tab index
-                for i in range(parent.tabs.count()):
-                    if "Image to Video" in parent.tabs.tabText(i):
-                        parent.tabs.setCurrentIndex(i)
+            print("[SEND TO VIDEO] Switching to Image to Video tab...")
+            if hasattr(main_window, 'tabs'):
+                tab_found = False
+                for i in range(main_window.tabs.count()):
+                    tab_text = main_window.tabs.tabText(i)
+                    print(f"[SEND TO VIDEO]   Tab {i}: '{tab_text}'")
+                    if "Image to Video" in tab_text or "🎬" in tab_text:
+                        main_window.tabs.setCurrentIndex(i)
+                        print(f"[SEND TO VIDEO] ✅ Switched to Image to Video tab (index {i})")
+                        tab_found = True
                         break
+                
+                if not tab_found:
+                    print("[SEND TO VIDEO] ⚠️ Image to Video tab not found!")
+            else:
+                print("[SEND TO VIDEO] ⚠️ MainWindow does not have 'tabs' attribute")
             
-            self.set_status(f"✅ Sent {len(successful_images)} images to Video")
+            # Auto-start video generation
+            print("[SEND TO VIDEO] Auto-starting video generation...")
+            auto_start_msg = ""
+            
+            if hasattr(main_window, 'start_image_generate_queue'):
+                # Check if there are LIVE accounts
+                has_live_account = False
+                if hasattr(main_window, 'accounts'):
+                    live_accounts = [a for a in main_window.accounts if a.status.lower() == "live"]
+                    has_live_account = len(live_accounts) > 0
+                    print(f"[SEND TO VIDEO] Found {len(live_accounts)} LIVE accounts")
+                
+                if has_live_account:
+                    try:
+                        # Use QTimer to ensure UI is updated before starting generation
+                        QTimer.singleShot(500, main_window.start_image_generate_queue)
+                        print("[SEND TO VIDEO] ✅ Scheduled auto-start video generation")
+                        auto_start_msg = "\n\n🎬 Auto-starting video generation..."
+                    except Exception as e:
+                        print(f"[SEND TO VIDEO] ⚠️ Error auto-starting generation: {e}")
+                        auto_start_msg = ""
+                else:
+                    print("[SEND TO VIDEO] ⚠️ No LIVE accounts - cannot auto-start")
+                    auto_start_msg = "\n\n⚠️ Please add a LIVE account to generate videos"
+            else:
+                print("[SEND TO VIDEO] ⚠️ MainWindow does not have start_image_generate_queue method")
+                auto_start_msg = ""
+            
+            self.set_status(f"✅ Sent {added_count} images to Video")
             
             QMessageBox.information(
                 self,
                 "Success",
-                f"✅ Sent {len(successful_images)} images to Image to Video tab!\n\n"
-                f"Switched to Image to Video tab."
+                f"✅ Sent {added_count} images to Image to Video tab!\n\n"
+                f"Switched to Image to Video tab.\n\n"
+                f"Total items in queue: {len(main_window.image_prompts)}"
+                f"{auto_start_msg}"
             )
             
         except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"[SEND TO VIDEO] ❌ CRITICAL ERROR: {error_details}")
             QMessageBox.critical(
                 self,
                 "Error",
-                f"Failed to send images to Image to Video:\n\n{str(e)}"
+                f"Failed to send images to Image to Video:\n\n{str(e)}\n\n"
+                f"Check console for details."
             )
     
     def on_cancel_batch(self):
@@ -2826,6 +3229,21 @@ class ImageGeneratorTab(QWidget):
             print(f"❌ Error loading Gemini keys from server: {e}")
             import traceback
             traceback.print_exc()
+    
+    def on_prompt_provider_change(self, provider: str):
+        """Update prompt model options based on provider."""
+        items = []
+        if provider == "ChatGPT":
+            # ChatGPT models: GPT-5 and o3
+            items = ["o3", "gpt-5"]
+        elif provider == "Gemini":
+            # Gemini models: 2.5 Pro and 2.5 Flash
+            items = ["gemini-2.5-pro", "gemini-2.5-flash"]
+        else:  # Groq default
+            items = ["llama-3.3-70b-versatile"]
+        
+        self.provider_model_cb.clear()
+        self.provider_model_cb.addItems(items)
 
 def main():
     """Main function - chỉ dùng khi chạy standalone"""

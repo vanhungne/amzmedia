@@ -787,7 +787,7 @@ class ProxyProvider:
 # ================================================================================
 
 class ElevenLabsGUI(QMainWindow):
-    def __init__(self, api_client=None):
+    def __init__(self, api_client=None, project_manager=None):
         super().__init__()
         
         # Initialize directories và files - TẠO TỰ ĐỘNG
@@ -795,6 +795,9 @@ class ElevenLabsGUI(QMainWindow):
         
         # API Client for server integration (optional)
         self.api_client = api_client
+        
+        # Project Manager for accessing current project settings (voice folder, etc.)
+        self.project_manager = project_manager
         
         # Initialize core data structures
         self.chunks = []
@@ -3533,20 +3536,45 @@ class ElevenLabsGUI(QMainWindow):
             # ============================================================
             self.log("📁 Determining output path...")
             
-            if self.project_text_path and os.path.exists(self.project_text_path):
-                # Lưu cùng thư mục với file txt gốc
+            output_dir = None
+            output_name = None
+            
+            # Priority 1: Use project voice_output folder (if project is selected)
+            if self.project_manager and self.project_manager.current_project:
+                project = self.project_manager.current_project
+                if hasattr(project, 'voice_output') and project.voice_output:
+                    output_dir = project.voice_output
+                    self.log(f"   ✅ Using project voice folder: {output_dir}")
+                    
+                    # Get script name from project_text_path or use project name
+                    if self.project_text_path and os.path.exists(self.project_text_path):
+                        output_name = os.path.splitext(os.path.basename(self.project_text_path))[0]
+                        self.log(f"   📄 Script name: {output_name}")
+                    else:
+                        output_name = project.name if hasattr(project, 'name') else "merged"
+                        self.log(f"   📦 Using project name: {output_name}")
+            
+            # Priority 2: Use txt file location (legacy behavior)
+            if not output_dir and self.project_text_path and os.path.exists(self.project_text_path):
                 output_dir = os.path.dirname(self.project_text_path)
                 output_name = os.path.splitext(os.path.basename(self.project_text_path))[0]
-                merged_file = os.path.join(output_dir, f"{output_name}.mp3")
-                
-                self.log(f"   Input TXT: {self.project_text_path}")
-                self.log(f"   Output MP3: {merged_file}")
-            else:
-                # Fallback: Lưu trong output folder
+                self.log(f"   📁 Using TXT folder: {output_dir}")
+                self.log(f"   📄 Script name: {output_name}")
+            
+            # Priority 3: Fallback to OUTPUT_DIR with timestamp
+            if not output_dir:
+                output_dir = OUTPUT_DIR
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                merged_file = os.path.join(OUTPUT_DIR, f"merged_{timestamp}.mp3")
-                self.log(f"   Output: {merged_file}")
-                self.log("   ⚠️ No source file path - using timestamp")
+                output_name = f"merged_{timestamp}"
+                self.log(f"   ⚠️ No project/script path - using fallback")
+                self.log(f"   📁 Fallback folder: {output_dir}")
+            
+            # Ensure output directory exists
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Build final path
+            merged_file = os.path.join(output_dir, f"{output_name}.mp3")
+            self.log(f"   🎵 Output file: {merged_file}")
             
             # ============================================================
             # STEP 5: MERGE FILES THEO THỨ TỰ TUYỆT ĐỐI

@@ -6681,8 +6681,13 @@ class MainWindow(QMainWindow):
         
         # Add Image Generator Tab
         if IMAGE_TAB_AVAILABLE:
-            # Pass api_client to enable server-based key management
-            self.image_gen_widget = ImageGeneratorTab(self.tab_image_generator, api_client=self.api_client)
+            # Pass api_client, project_manager, and main_window for full integration
+            self.image_gen_widget = ImageGeneratorTab(
+                self.tab_image_generator, 
+                api_client=self.api_client,
+                project_manager=self.project_manager,
+                main_window=self  # Pass MainWindow reference for "to Video" feature
+            )
             layout.addWidget(self.image_gen_widget)
         else:
             # Fallback message
@@ -6939,8 +6944,11 @@ class MainWindow(QMainWindow):
         if ELEVENLABS_AVAILABLE:
             # Tạo instance của ElevenLabsGUI nhưng dùng như Widget
             # Bỏ window decorations
-            # Pass api_client để có thể load keys from server
-            self.elevenlabs_widget = ElevenLabsGUI(api_client=self.api_client)
+            # Pass api_client và project_manager để load keys + voice folder
+            self.elevenlabs_widget = ElevenLabsGUI(
+                api_client=self.api_client,
+                project_manager=self.project_manager
+            )
             self.elevenlabs_widget.setWindowFlags(Qt.Widget)  # Set as widget, not window
             
             # Nhúng vào layout
