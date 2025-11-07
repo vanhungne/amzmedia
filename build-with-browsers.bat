@@ -84,8 +84,18 @@ echo ============================================
 echo [4/5] Building executable...
 echo ============================================
 echo Cleaning previous builds...
+REM Ensure no running instance is locking files
+taskkill /IM WorkFlowTool.exe /F >nul 2>&1
+REM Give Windows a moment to release handles
+timeout /t 2 /nobreak >nul
+
 if exist dist\WorkFlowTool rmdir /s /q dist\WorkFlowTool
 if exist build rmdir /s /q build
+REM If deletion failed due to attributes, force-clear attributes and retry once
+if exist dist\WorkFlowTool (
+    attrib -R -H -S /S /D dist\WorkFlowTool 2>nul
+    rmdir /s /q dist\WorkFlowTool
+)
 
 REM Create image folder if not exists (empty folder is OK)
 if not exist image mkdir image
@@ -122,46 +132,72 @@ if errorlevel 1 (
 
 echo.
 echo ============================================
-echo [5/5] Copying Playwright browsers...
+echo [5/5] Bundling Playwright browsers...
 echo ============================================
 
-REM Find Playwright browsers location
-for /f "tokens=*" %%i in ('python -c "import os; from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(os.path.dirname(p.chromium.executable_path)); p.stop()"') do set BROWSER_PATH=%%i
+REM Find ms-playwright root directory (parent of all browser folders)
+for /f "tokens=*" %%i in ('python -c "import os; print(os.path.join(os.environ.get('LOCALAPPDATA', ''), 'ms-playwright'))"') do set MS_PLAYWRIGHT_ROOT=%%i
 
-echo Browser location: %BROWSER_PATH%
+echo ms-playwright root: %MS_PLAYWRIGHT_ROOT%
 
-REM Copy browsers to dist folder
-if exist "%BROWSER_PATH%" (
-    echo Copying browsers to dist folder...
-    
-    REM Get parent directory (ms-playwright folder)
-    for %%i in ("%BROWSER_PATH%") do set PLAYWRIGHT_DIR=%%~dpi
-    
-    REM Remove trailing backslash and go up one level
-    set PLAYWRIGHT_DIR=%PLAYWRIGHT_DIR:~0,-1%
-    for %%i in ("%PLAYWRIGHT_DIR%") do set PLAYWRIGHT_DIR=%%~dpi
-    set PLAYWRIGHT_DIR=%PLAYWRIGHT_DIR:~0,-1%
-    
-    echo Copying from: %PLAYWRIGHT_DIR%
-    
-    REM Copy entire ms-playwright folder to _external
-    if exist "%PLAYWRIGHT_DIR%" (
-        mkdir "dist\WorkFlowTool\_external" 2>nul
-        xcopy "%PLAYWRIGHT_DIR%" "dist\WorkFlowTool\_external\ms-playwright\" /E /I /Y /Q
-        
-        if errorlevel 1 (
-            echo [WARNING] Failed to copy browsers automatically
-            echo You may need to copy browsers manually later
-        ) else (
-            echo [OK] Browsers copied successfully!
-        )
-    ) else (
-        echo [WARNING] Playwright directory not found at: %PLAYWRIGHT_DIR%
+REM Verify ms-playwright directory exists
+if not exist "%MS_PLAYWRIGHT_ROOT%" (
+    echo [ERROR] ms-playwright directory not found at: %MS_PLAYWRIGHT_ROOT%
+    echo [INFO] Installing Chromium browser now...
+    playwright install chromium
+    if errorlevel 1 (
+        echo [ERROR] Failed to install Playwright Chromium.
+        pause
+        exit /b 1
     )
-) else (
-    echo [WARNING] Browser executable not found!
-    echo The application may need to download browsers on first run
 )
+
+REM Verify at least one chromium folder exists
+dir /b "%MS_PLAYWRIGHT_ROOT%\chromium-*" >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] No chromium-* folder found in: %MS_PLAYWRIGHT_ROOT%
+    echo [INFO] Installing Chromium browser now...
+    playwright install chromium
+    if errorlevel 1 (
+        echo [ERROR] Failed to install Playwright Chromium.
+        pause
+        exit /b 1
+    )
+    REM Verify again
+    dir /b "%MS_PLAYWRIGHT_ROOT%\chromium-*" >nul 2>&1
+    if errorlevel 1 (
+        echo [ERROR] Still no chromium-* folder after install. Build cannot proceed.
+        pause
+        exit /b 1
+    )
+)
+
+echo [OK] Found Chromium browsers in: %MS_PLAYWRIGHT_ROOT%
+
+REM Create _internal folder
+mkdir "dist\WorkFlowTool\_internal" 2>nul
+
+REM Copy entire ms-playwright folder to _internal/ms-playwright
+echo Copying all browsers from ms-playwright...
+xcopy "%MS_PLAYWRIGHT_ROOT%\*" "dist\WorkFlowTool\_internal\ms-playwright\" /E /I /Y /Q
+
+if errorlevel 1 (
+    echo [ERROR] Failed to copy browsers to _internal\ms-playwright
+    echo Source: %MS_PLAYWRIGHT_ROOT%
+    echo Dest: dist\WorkFlowTool\_internal\ms-playwright
+    pause
+    exit /b 1
+)
+
+REM Verify copy succeeded
+dir /b "dist\WorkFlowTool\_internal\ms-playwright\chromium-*" >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Copy completed but chromium-* folder not found in _internal\ms-playwright
+    pause
+    exit /b 1
+)
+
+echo [OK] Browsers bundled successfully in _internal\ms-playwright
 
 echo.
 echo ============================================
@@ -180,6 +216,8 @@ for /f "usebackq" %%A in (`dir /s /a "dist\WorkFlowTool" ^| find "bytes"`) do se
 echo   ^> Check dist\WorkFlowTool folder
 echo.
 pause
+
+
 
 
 

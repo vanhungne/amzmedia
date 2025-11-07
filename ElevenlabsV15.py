@@ -602,39 +602,6 @@ class APIKeyManager:
                 self._idx = 0
         self._logger(f"🔑 Loaded {len(self._keys)} API keys")
         return len(self._keys) > 0
-    
-    def load_from_list(self, api_keys_data):
-        """Load API keys from server data - KHÔNG qua file, user không thấy được keys
-        
-        Args:
-            api_keys_data: List of dict with 'api_key' and 'id' from server
-        """
-        with self._lock:
-            if not api_keys_data:
-                self._logger("⚠️ No API keys provided")
-                return False
-            
-            # Store both key and id for reporting back to server
-            self._keys_with_ids = [
-                {'key': item['api_key'].strip(), 'id': item['id']} 
-                for item in api_keys_data 
-                if item.get('api_key', '').strip().startswith('sk_')
-            ]
-            self._keys = [item['key'] for item in self._keys_with_ids]
-            self._idx = 0
-            
-        self._logger(f"🔑 Loaded {len(self._keys)} API keys from server (memory only)")
-        return len(self._keys) > 0
-    
-    def get_key_id(self, api_key):
-        """Get server key ID for reporting status"""
-        with self._lock:
-            if not hasattr(self, '_keys_with_ids'):
-                return None
-            for item in self._keys_with_ids:
-                if item['key'] == api_key:
-                    return item['id']
-            return None
 
     def count(self):
         with self._lock:
@@ -672,15 +639,12 @@ class APIKeyManager:
 
 class ProxyProvider:
     """Manages proxy - GIỐNG HỆT TKINTER"""
-    def __init__(self, get_links_callable, logger, api_client=None, proxy_keys_with_ids=None):
+    def __init__(self, get_links_callable, logger):
         self._lock = threading.Lock()
         self._current = None
         self._need_refresh = False
         self._get_links = get_links_callable
         self._logger = logger
-        self._api_client = api_client
-        self._proxy_keys_with_ids = proxy_keys_with_ids or {}
-        self._current_proxy_key = None  # Track current proxy key for reporting
 
     def mark_need_refresh(self):
         with self._lock:
@@ -691,16 +655,6 @@ class ProxyProvider:
         if not links:
             return None
         link = random.choice(links)
-        
-        # Extract proxy key from link for reporting
-        proxy_key = None
-        if 'key=' in link:
-            proxy_key = link.split('key=')[1].split('&')[0]
-        else:
-            proxy_key = link  # Full URL
-        
-        self._current_proxy_key = proxy_key
-        
         try:
             r = requests.get(link, timeout=10)
             if r.status_code == 200:
@@ -742,30 +696,6 @@ class ProxyProvider:
                             time.sleep(wait)
                             return self._fetch_new_proxy()
                     return None
-                
-                elif st == 102:
-                    # Key không tồn tại hoặc hết hạn - BÁO VỀ SERVER
-                    msg = data.get('message', 'key khong ton tai hoac het han')
-                    self._logger(f"🔴 Proxy key expired: {msg}")
-                    
-                    # Report to server if available
-                    if self._api_client and self._api_client.is_authenticated() and proxy_key:
-                        proxy_id = self._proxy_keys_with_ids.get(proxy_key)
-                        if proxy_id:
-                            try:
-                                self._api_client.report_proxy_status(
-                                    key_id=proxy_id,
-                                    status='dead',
-                                    error_message=msg
-                                )
-                                self._logger(f"📤 Reported expired proxy to server")
-                            except Exception as e:
-                                self._logger(f"⚠️ Failed to report proxy status: {e}")
-                    
-                    # Chờ 60s trước khi đổi proxy khác
-                    self._logger(f"⏳ Waiting 60s before trying next proxy...")
-                    time.sleep(60)
-                    return self._fetch_new_proxy()  # Retry with next proxy
                 else:
                     self._logger(f"Proxy service error (status {st}): {data.get('message','Unknown')}")
                     return None
@@ -790,14 +720,13 @@ class ElevenLabsGUI(QMainWindow):
     def __init__(self, api_client=None, project_manager=None):
         super().__init__()
         
-        # Initialize directories và files - TẠO TỰ ĐỘNG
-        ensure_directories_and_files()
-        
         # API Client for server integration (optional)
         self.api_client = api_client
-        
-        # Project Manager for accessing current project settings (voice folder, etc.)
+        # Project Manager for voice output folder
         self.project_manager = project_manager
+        
+        # Initialize directories và files - TẠO TỰ ĐỘNG
+        ensure_directories_and_files()
         
         # Initialize core data structures
         self.chunks = []
@@ -825,10 +754,7 @@ class ElevenLabsGUI(QMainWindow):
         # Initialize managers
         self.log_queue = queue.Queue()
         self.api_manager = APIKeyManager(API_FILE, BASE_DIR, self.log)
-        # Store proxy keys with IDs for reporting (key -> id mapping)
-        self.proxy_keys_with_ids = {}  # {proxy_key: proxy_id}
-        # Proxy provider will be initialized after api_client is set
-        self.proxy_provider = ProxyProvider(self._get_proxy_links, self.log, self.api_client, self.proxy_keys_with_ids)
+        self.proxy_provider = ProxyProvider(self._get_proxy_links, self.log)
         
         # Build UI TRƯỚC
         self.init_ui()
@@ -838,14 +764,7 @@ class ElevenLabsGUI(QMainWindow):
         
         # Load settings SAU khi UI đã được tạo
         self.log("Loading all settings...")
-        
-        # Chỉ load keys từ file nếu KHÔNG có api_client (standalone mode)
-        # Nếu có api_client, keys sẽ được auto-load từ server
-        if not self.api_client:
-            self.api_manager.load_from_file()
-        else:
-            self.log("⏭️ Skipping local API file (will load from server)")
-        
+        self.api_manager.load_from_file()
         self.load_voices()
         self.load_voice_settings()
         self.load_proxy_links()
@@ -1276,8 +1195,6 @@ class ElevenLabsGUI(QMainWindow):
         api_layout = QVBoxLayout()
         
         btn_row = QHBoxLayout()
-        
-        # Only show "Load from Server" - không cho user import/see keys
         btn_load_server = QPushButton("☁️ Load from Server")
         btn_load_server.setStyleSheet("""
             QPushButton {
@@ -1365,15 +1282,30 @@ class ElevenLabsGUI(QMainWindow):
         radio_layout.addStretch()
         proxy_layout.addLayout(radio_layout)
         
-        # Key input - ẨN ĐI (admin quản lý trên server)
-        # User không cần nhập key thủ công
-        # key_row = QHBoxLayout()
-        # ... hidden ...
-        
-        # Only "Validate" button - User chỉ validate proxies được assign
+        # Proxy buttons
         proxy_btn_row = QHBoxLayout()
+        btn_load_proxy = QPushButton("☁️ Load from Server")
+        btn_load_proxy.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #3b82f6, stop:1 #2563eb);
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+                font-size: 10pt;
+                min-height: 32px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #60a5fa, stop:1 #3b82f6);
+            }
+        """)
+        btn_load_proxy.clicked.connect(self.load_proxy_from_server)
+        proxy_btn_row.addWidget(btn_load_proxy)
         
-        btn_validate = QPushButton("✓ Validate Proxy")
+        btn_validate = QPushButton("✓ Validate")
         btn_validate.setStyleSheet("""
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -1797,37 +1729,29 @@ class ElevenLabsGUI(QMainWindow):
         
         gen_group = QGroupBox("Generation")
         gen_layout = QGridLayout()
-        gen_layout.setColumnStretch(0, 1)
-        gen_layout.setColumnStretch(1, 2)
-        gen_layout.setSpacing(10)
-        gen_layout.setContentsMargins(15, 15, 15, 15)
         
         gen_layout.addWidget(QLabel("Delay (ms):"), 0, 0)
         self.delay_spin = QSpinBox()
         self.delay_spin.setRange(0, 10000)
         self.delay_spin.setValue(0)
-        self.delay_spin.setMinimumWidth(120)
         gen_layout.addWidget(self.delay_spin, 0, 1)
         
         gen_layout.addWidget(QLabel("Max retries:"), 1, 0)
         self.max_retries_spin = QSpinBox()
         self.max_retries_spin.setRange(1, 10)
         self.max_retries_spin.setValue(3)
-        self.max_retries_spin.setMinimumWidth(120)
         gen_layout.addWidget(self.max_retries_spin, 1, 1)
         
         gen_layout.addWidget(QLabel("Concurrency:"), 2, 0)
         self.concurrency_spin = QSpinBox()
         self.concurrency_spin.setRange(1, 20)
         self.concurrency_spin.setValue(4)
-        self.concurrency_spin.setMinimumWidth(120)
         gen_layout.addWidget(self.concurrency_spin, 2, 1)
         
         gen_layout.addWidget(QLabel("Timeout (s):"), 3, 0)
         self.timeout_spin = QSpinBox()
         self.timeout_spin.setRange(5, 300)
         self.timeout_spin.setValue(30)
-        self.timeout_spin.setMinimumWidth(120)
         gen_layout.addWidget(self.timeout_spin, 3, 1)
         
         self.enable_multithread_check = QCheckBox("Enable multithread")
@@ -2111,131 +2035,16 @@ class ElevenLabsGUI(QMainWindow):
             self.log("Opened API.txt file. Please paste your API keys there.")
         except Exception as e:
             self.log(f"Error opening API file: {str(e)}")
-    
-    def report_key_status_to_server(self, api_key, status, error_message=None, credit_balance=None):
-        """Report ElevenLabs API key status back to server"""
-        if not self.api_client or not self.api_client.is_authenticated():
-            return  # Silently skip if not connected
-        
-        try:
-            key_id = self.api_manager.get_key_id(api_key)
-            if not key_id:
-                return  # Key not from server, skip
-            
-            success = self.api_client.report_elevenlabs_key_status(
-                key_id=key_id,
-                status=status,
-                error_message=error_message,
-                credit_balance=credit_balance
-            )
-            
-            if success and status != 'active':
-                self.log(f"📤 Reported key status to server: {status}")
-        except Exception as e:
-            # Don't disrupt workflow if reporting fails
-            self.log(f"⚠️ Failed to report key status: {e}")
-    
-    def load_proxy_from_server(self):
-        """Load proxy keys from Admin Panel server"""
-        if not self.api_client or not self.api_client.is_authenticated():
-            return  # Silently skip if not connected
-        
-        try:
-            proxy_data = self.api_client.get_proxy_keys()
-            
-            if not proxy_data:
-                self.log("⚠️ No proxy keys assigned")
-                return
-            
-            # Load proxy keys into memory (as list of strings)
-            self.proxy_keys = [p['proxy_key'] for p in proxy_data if p.get('proxy_key')]
-            
-            # Store mapping key -> id for reporting
-            self.proxy_keys_with_ids = {
-                p['proxy_key']: p['id'] 
-                for p in proxy_data 
-                if p.get('proxy_key') and p.get('id')
-            }
-            
-            # Update proxy provider with new api_client and keys mapping
-            if self.proxy_provider:
-                self.proxy_provider._api_client = self.api_client
-                self.proxy_provider._proxy_keys_with_ids = self.proxy_keys_with_ids
-            
-            if self.proxy_keys:
-                self.log(f"✅ Loaded {len(self.proxy_keys)} proxy keys from server")
-                # Update stats label
-                self.proxy_stats_label.setText(f"Links: {len(self.proxy_keys)}    OK: 0    Fail: 0")
-                # Enable rotation if we have proxies
-                if len(self.proxy_keys) > 0:
-                    self.proxy_rotation_radio.setChecked(True)
-            else:
-                self.log("⚠️ No valid proxy keys")
-                
-        except Exception as e:
-            self.log(f"⚠️ Failed to load proxy keys: {e}")
-    
-    def load_keys_from_server(self):
-        """Load ElevenLabs API keys from Admin Panel server - DIRECTLY to memory, NO file save"""
-        if not self.api_client or not self.api_client.is_authenticated():
-            self.log("❌ Not connected to server. Please login first!")
-            QMessageBox.warning(
-                self,
-                "Not Connected",
-                "Please login to Admin Panel first!\n\n"
-                "Go to Projects tab → 🔐 Connect to Admin Panel"
-            )
-            return
-        
-        self.log("☁️ Loading ElevenLabs keys from server...")
-        
-        try:
-            keys_data = self.api_client.get_elevenlabs_keys()
-            
-            if not keys_data:
-                self.log("⚠️ No keys found on server or failed to load")
-                QMessageBox.information(
-                    self,
-                    "No Keys Found",
-                    "No ElevenLabs API keys assigned to your account.\n\n"
-                    "Please ask admin to assign keys to you."
-                )
-                return
-            
-            # Validate keys data
-            if not keys_data:
-                self.log("⚠️ No valid API keys found")
-                return
-            
-            # ✅ KHÔNG LƯU VÀO FILE - Load trực tiếp vào memory
-            # User sẽ KHÔNG thấy được keys
-            # Pass full data including key IDs for status reporting
-            success = self.api_manager.load_from_list(keys_data)
-            
-            if success:
-                key_count = self.api_manager.count()
-                self.log(f"✅ Loaded {key_count} keys from server (in memory only)")
-                QMessageBox.information(
-                    self,
-                    "Success",
-                    f"✅ Loaded {key_count} ElevenLabs API keys from server!\n\n"
-                    f"Keys are ready to use.\n"
-                    f"🔒 Keys are stored securely (not visible to users)"
-                )
-            
-        except Exception as e:
-            self.log(f"❌ Error loading keys from server: {e}")
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"Failed to load keys from server:\n\n{str(e)}"
-            )
 
     def check_credits(self):
-        """Check credits - check keys hiện tại trong memory (không load lại từ file)"""
+        """Check credits - GIỐNG HỆT TKINTER"""
+        if not self.api_manager.load_from_file():
+            self.log("No API keys found")
+            return
+        
         total = self.api_manager.count()
         if total == 0:
-            self.log("⚠️ No API keys loaded. Please load keys from server first.")
+            self.log("No valid API keys found")
             return
         
         self.log("💰 Checking credits...")
@@ -2270,17 +2079,10 @@ class ElevenLabsGUI(QMainWindow):
                 except Exception as e:
                     self.log(f"❌ API ...{api_key[-4:]}: {str(e)}")
             
-            # Update memory with valid keys (KHÔNG LƯU VÀO FILE nếu keys từ server)
-            # Nếu keys từ server (có _keys_with_ids), giữ nguyên trong memory
-            # Chỉ update label hiển thị
-            if not hasattr(self.api_manager, '_keys_with_ids') or not self.api_manager._keys_with_ids:
-                # Keys từ file cũ - có thể lưu lại
-                with open(API_FILE, 'w', encoding='utf-8') as f:
-                    f.write('\n'.join(valid_keys))
-                self.log("💾 Saved valid keys to file")
-            else:
-                # Keys từ server - KHÔNG lưu vào file (bảo mật)
-                self.log("🔒 Keys from server - not saved to file (security)")
+            # Save only valid keys
+            with open(API_FILE, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(valid_keys))
+            self.api_manager.load_from_file()
             
             self.total_credits_label.setText(f"{total_remaining_credits:,} credits")
             self.log(f"💎 Total: {total_remaining_credits:,} credits")
@@ -2911,6 +2713,7 @@ class ElevenLabsGUI(QMainWindow):
         # V3 Alpha Warning (skip in auto mode)
         model_name = self.model_combo.currentText()
         if model_name == "V3 (Alpha)" and not auto_mode:
+            num_gen = self.v3_generations_spin.value()
             stability = self.stability_combo.currentData()
             
             # Determine mode name
@@ -2926,7 +2729,9 @@ class ElevenLabsGUI(QMainWindow):
             msg = f"🎭 V3 Alpha Mode:\n\n"
             msg += f"• Stability: {mode_text}\n"
             msg += f"  → {desc}\n\n"
+            msg += f"• Generating {num_gen} version(s) per chunk\n"
             msg += f"• Only STABILITY setting works\n"
+            msg += f"• Review and select best results\n"
             msg += f"• Not for real-time applications\n\n"
             msg += f"Continue?"
             
@@ -3080,8 +2885,13 @@ class ElevenLabsGUI(QMainWindow):
                         if not is_v3:
                             self.log(f"🔍 DEBUG: similarity={self.similarity_spin.value()}, style={self.style_spin.value()}, boost={self.speaker_boost_check.isChecked()}")
                     
-                    # Generate audio (always single generation)
-                    num_generations = 1
+                    # V3 Multiple Generations Support
+                    num_generations = self.v3_generations_spin.value() if is_v3 else 1
+                    
+                    if is_v3 and num_generations > 1:
+                        self.log(f"🎭 V3: Generating {num_generations} versions for chunk {chunk['number']}")
+                    
+                    # Generate multiple versions for V3
                     best_audio = None
                     outdir = self._get_audio_output_dir()
                     os.makedirs(outdir, exist_ok=True)
@@ -3102,10 +2912,6 @@ class ElevenLabsGUI(QMainWindow):
                                     self.log(f"⚠️ Response: {resp.text[:200]}")
                         
                         if resp.status_code == 200:
-                            # ✅ Success - report active status to server
-                            if gen_num == 0:
-                                self.report_key_status_to_server(api_key, 'active')
-                            
                             if num_generations > 1:
                                 # Save multiple versions
                                 audio_file = os.path.join(outdir, f"chunk_{chunk['number']:03d}_v{gen_num+1}.mp3")
@@ -3124,52 +2930,9 @@ class ElevenLabsGUI(QMainWindow):
                                     f.write(resp.content)
                                 best_audio = audio_file
                         else:
-                            # ❌ Error - report to server
                             if gen_num == 0:
                                 chunk['status'] = STATUS_FAIL
                                 self.log(f"❌ Chunk {chunk['number']}: {resp.status_code}")
-                                
-                                # Determine error type and report to server
-                                error_msg = None
-                                try:
-                                    error_data = resp.json()
-                                    error_msg = error_data.get('detail', {}).get('message', str(error_data))
-                                except:
-                                    error_msg = resp.text[:200]
-                                
-                                if resp.status_code == 401:
-                                    # Invalid/dead API key - vứt key và báo về server
-                                    self.report_key_status_to_server(api_key, 'dead', error_message=error_msg)
-                                    self.log(f"🔴 Key marked as DEAD: ...{api_key[-4:]}")
-                                    # Vứt key khỏi pool (nếu dùng APIKeyManager)
-                                    if hasattr(self, 'api_manager') and self.api_manager:
-                                        try:
-                                            self.api_manager.remove_and_backup(
-                                                api_key, 
-                                                'dead_keys.txt', 
-                                                f'401 error: {error_msg[:50]}'
-                                            )
-                                        except:
-                                            pass
-                                elif resp.status_code == 429 or 'quota' in str(error_msg).lower() or 'credit' in str(error_msg).lower():
-                                    # Out of credits - vứt key và báo về server
-                                    self.report_key_status_to_server(api_key, 'out_of_credit', error_message=error_msg)
-                                    self.log(f"💸 Key out of CREDITS: ...{api_key[-4:]}")
-                                    # Vứt key khỏi pool
-                                    if hasattr(self, 'api_manager') and self.api_manager:
-                                        try:
-                                            self.api_manager.remove_and_backup(
-                                                api_key, 
-                                                'out_of_credit_keys.txt', 
-                                                f'Out of credit: {error_msg[:50]}'
-                                            )
-                                        except:
-                                            pass
-                                else:
-                                    # Other error - vẫn report về server để tracking
-                                    self.report_key_status_to_server(api_key, 'active', error_message=error_msg)
-                                    self.log(f"⚠️ Key error (still active): ...{api_key[-4:]}")
-                                
                                 break
                     
                     if resp.status_code == 200 and best_audio:
@@ -3536,45 +3299,20 @@ class ElevenLabsGUI(QMainWindow):
             # ============================================================
             self.log("📁 Determining output path...")
             
-            output_dir = None
-            output_name = None
-            
-            # Priority 1: Use project voice_output folder (if project is selected)
-            if self.project_manager and self.project_manager.current_project:
-                project = self.project_manager.current_project
-                if hasattr(project, 'voice_output') and project.voice_output:
-                    output_dir = project.voice_output
-                    self.log(f"   ✅ Using project voice folder: {output_dir}")
-                    
-                    # Get script name from project_text_path or use project name
-                    if self.project_text_path and os.path.exists(self.project_text_path):
-                        output_name = os.path.splitext(os.path.basename(self.project_text_path))[0]
-                        self.log(f"   📄 Script name: {output_name}")
-                    else:
-                        output_name = project.name if hasattr(project, 'name') else "merged"
-                        self.log(f"   📦 Using project name: {output_name}")
-            
-            # Priority 2: Use txt file location (legacy behavior)
-            if not output_dir and self.project_text_path and os.path.exists(self.project_text_path):
+            if self.project_text_path and os.path.exists(self.project_text_path):
+                # Lưu cùng thư mục với file txt gốc
                 output_dir = os.path.dirname(self.project_text_path)
                 output_name = os.path.splitext(os.path.basename(self.project_text_path))[0]
-                self.log(f"   📁 Using TXT folder: {output_dir}")
-                self.log(f"   📄 Script name: {output_name}")
-            
-            # Priority 3: Fallback to OUTPUT_DIR with timestamp
-            if not output_dir:
-                output_dir = OUTPUT_DIR
+                merged_file = os.path.join(output_dir, f"{output_name}.mp3")
+                
+                self.log(f"   Input TXT: {self.project_text_path}")
+                self.log(f"   Output MP3: {merged_file}")
+            else:
+                # Fallback: Lưu trong output folder
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                output_name = f"merged_{timestamp}"
-                self.log(f"   ⚠️ No project/script path - using fallback")
-                self.log(f"   📁 Fallback folder: {output_dir}")
-            
-            # Ensure output directory exists
-            os.makedirs(output_dir, exist_ok=True)
-            
-            # Build final path
-            merged_file = os.path.join(output_dir, f"{output_name}.mp3")
-            self.log(f"   🎵 Output file: {merged_file}")
+                merged_file = os.path.join(OUTPUT_DIR, f"merged_{timestamp}.mp3")
+                self.log(f"   Output: {merged_file}")
+                self.log("   ⚠️ No source file path - using timestamp")
             
             # ============================================================
             # STEP 5: MERGE FILES THEO THỨ TỰ TUYỆT ĐỐI
@@ -3930,6 +3668,108 @@ class ElevenLabsGUI(QMainWindow):
             self.log_area.setLineWrapMode(QTextEdit.WidgetWidth)
         else:
             self.log_area.setLineWrapMode(QTextEdit.NoWrap)
+    
+    def load_proxy_from_server(self):
+        """Load proxy keys from Admin Panel server"""
+        if not self.api_client or not self.api_client.is_authenticated():
+            return  # Silently skip if not connected
+        
+        try:
+            proxy_data = self.api_client.get_proxy_keys()
+            
+            if not proxy_data:
+                self.log("⚠️ No proxy keys assigned")
+                return
+            
+            # Load proxy keys into memory (as list of strings)
+            self.proxy_keys = [p['proxy_key'] for p in proxy_data if p.get('proxy_key')]
+            
+            # Store mapping key -> id for reporting
+            self.proxy_keys_with_ids = {
+                p['proxy_key']: p['id'] 
+                for p in proxy_data 
+                if p.get('proxy_key') and p.get('id')
+            }
+            
+            # Update proxy provider with new api_client and keys mapping
+            if self.proxy_provider:
+                self.proxy_provider._api_client = self.api_client
+                self.proxy_provider._proxy_keys_with_ids = getattr(self, 'proxy_keys_with_ids', {})
+            
+            if self.proxy_keys:
+                self.log(f"✅ Loaded {len(self.proxy_keys)} proxy keys from server")
+                # Update stats label if exists
+                if hasattr(self, 'proxy_stats_label'):
+                    self.proxy_stats_label.setText(f"Links: {len(self.proxy_keys)}    OK: 0    Fail: 0")
+            else:
+                self.log("⚠️ No valid proxy keys")
+                
+        except Exception as e:
+            self.log(f"⚠️ Failed to load proxy keys: {e}")
+    
+    def load_keys_from_server(self):
+        """Load ElevenLabs API keys from Admin Panel server"""
+        if not self.api_client or not self.api_client.is_authenticated():
+            self.log("❌ Not connected to server. Please login first!")
+            # Skip popup during silent startup
+            if not os.environ.get("WF_SILENT_STARTUP"):
+                QMessageBox.warning(
+                    self,
+                    "Not Connected",
+                    "Please login to Admin Panel first!\n\n"
+                    "Go to Projects tab → 🔐 Connect to Admin Panel"
+                )
+            return
+        
+        self.log("☁️ Loading ElevenLabs keys from server...")
+        
+        try:
+            keys_data = self.api_client.get_elevenlabs_keys()
+            
+            if not keys_data:
+                self.log("⚠️ No keys found on server or failed to load")
+                # Skip popup during silent startup
+                if not os.environ.get("WF_SILENT_STARTUP"):
+                    QMessageBox.information(
+                        self,
+                        "No Keys Found",
+                        "No ElevenLabs API keys assigned to your account.\n\n"
+                        "Please ask admin to assign keys to you."
+                    )
+                return
+            
+            # Extract API keys from server data
+            api_keys = [item.get('api_key', '').strip() for item in keys_data if item.get('api_key')]
+            
+            if not api_keys:
+                self.log("⚠️ No valid API keys extracted from server data")
+                return
+            
+            # Load keys directly into api_manager (in memory, not file)
+            with self.api_manager._lock:
+                self.api_manager._keys = api_keys
+                self.api_manager._idx = 0
+            
+            key_count = len(api_keys)
+            self.log(f"✅ Loaded {key_count} keys from server (in memory only)")
+            
+            # Skip popup during silent startup
+            if not os.environ.get("WF_SILENT_STARTUP"):
+                QMessageBox.information(
+                    self,
+                    "Success",
+                    f"✅ Loaded {key_count} ElevenLabs API keys from server!\n\n"
+                    f"Keys are ready to use.\n"
+                    f"🔒 Keys are stored securely (not visible to users)"
+                )
+            
+        except Exception as e:
+            self.log(f"❌ Error loading keys from server: {e}")
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to load keys from server:\n\n{str(e)}"
+            )
 
 
 def main():

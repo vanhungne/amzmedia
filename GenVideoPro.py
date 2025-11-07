@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import sys, os, re, time, json, base64, unicodedata, shutil, subprocess, gc
 import hashlib, uuid
+import socket
 from dataclasses import dataclass
 from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
@@ -200,30 +201,32 @@ try:
     base = Path(getattr(sys, "_MEIPASS", APP_DIR))
     
     # Thứ tự ưu tiên tìm browsers:
-    # 1. _internal/ms-playwright (PyInstaller bundle - trong folder dist)
-    # 2. ms-playwright (PyInstaller bundle - trong temp _MEIPASS)
-    # 3. _external/ms-playwright (manual copy - bên cạnh exe)
+    # 1. _internal/ms-playwright (bundled - trong folder dist)
+    # 2. ms-playwright (PyInstaller temp - trong _MEIPASS)
     
     possible_paths = [
-        APP_DIR / "_internal" / "ms-playwright",   # Trong folder dist/_internal
-        base / "ms-playwright",                     # Trong temp _MEIPASS
-        APP_DIR / "_external" / "ms-playwright",   # Manual copy (fallback)
+        APP_DIR / "_internal" / "ms-playwright",   # Bundled browsers trong dist/_internal
+        base / "ms-playwright",                     # Trong temp _MEIPASS (nếu có)
     ]
     
+    BUNDLED_PW_DIR = None
     for mp in possible_paths:
         if mp.exists():
             os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(mp)
-            print(f"[OK] Found Playwright browsers at: {mp}")
+            BUNDLED_PW_DIR = mp
             break
-    else:
-        print("[INFO] Playwright browsers not bundled, will download on first use")
         
 except Exception as e:
     print(f"[WARNING] Error checking Playwright browsers: {e}")
 
-# Kiểm tra Playwright browsers khi app khởi động (silent check, GUI dialog sẽ được gọi sau)
-print("[INFO] Checking Playwright browsers...")
-_playwright_ready = ensure_playwright_browsers_installed(show_dialog=False)
+# Chỉ kiểm tra/cài đặt Playwright khi chạy dev mode (không đóng gói)
+is_frozen = bool(getattr(sys, "frozen", False))
+if is_frozen and os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+    # App đóng gói với browsers bundled - bỏ qua kiểm tra
+    _playwright_ready = True
+else:
+    # Dev mode hoặc không có bundle - kiểm tra/cài đặt nếu cần
+    _playwright_ready = ensure_playwright_browsers_installed(show_dialog=False)
 SETTINGS_FILE = APP_DIR / "vgp_settings.json"
 
 # ============================== Cookie utils ===============================
@@ -301,6 +304,8 @@ class Project:
     voice_id: str = ""  # Default ElevenLabs voice ID
     auto_workflow: bool = True  # Enable auto workflow
     auto_organize_folders: bool = False  # Auto create script folders (voice/image/video)
+    prompt_provider: str = "Groq"  # AI provider for script analysis (Groq/ChatGPT/Gemini)
+    prompt_model: str = "llama-3.3-70b-versatile"  # AI model for script analysis
     
     def to_dict(self) -> dict:
         return {
@@ -317,7 +322,9 @@ class Project:
             "num_prompts": self.num_prompts,
             "voice_id": self.voice_id,
             "auto_workflow": self.auto_workflow,
-            "auto_organize_folders": self.auto_organize_folders
+            "auto_organize_folders": self.auto_organize_folders,
+            "prompt_provider": self.prompt_provider,
+            "prompt_model": self.prompt_model
         }
     
     @staticmethod
@@ -336,7 +343,9 @@ class Project:
             num_prompts=data.get("num_prompts", 5),
             voice_id=data.get("voice_id", ""),
             auto_workflow=data.get("auto_workflow", True),
-            auto_organize_folders=data.get("auto_organize_folders", False)
+            auto_organize_folders=data.get("auto_organize_folders", False),
+            prompt_provider=data.get("prompt_provider", "Groq"),
+            prompt_model=data.get("prompt_model", "llama-3.3-70b-versatile")
         )
 
 class ProjectManager:
@@ -538,6 +547,31 @@ class ProjectDialog(QDialog):
                 self.combo_voice.addItem(f"{voice_name} ({voice_id})", voice_id)
         form_layout.addWidget(self.combo_voice)
         
+        # AI Provider Selection
+        lbl_provider = QLabel("🤖 AI Provider for Script Analysis")
+        lbl_provider.setStyleSheet("font-size: 10pt; margin-top: 12px; font-weight: bold;")
+        form_layout.addWidget(lbl_provider)
+        
+        self.combo_provider = QComboBox()
+        self.combo_provider.addItem("🚀 Groq (Fast & Free)", "Groq")
+        self.combo_provider.addItem("💬 ChatGPT (OpenAI)", "ChatGPT")
+        self.combo_provider.addItem("✨ Gemini (Google)", "Gemini")
+        self.combo_provider.setCurrentIndex(0)  # Default: Groq
+        form_layout.addWidget(self.combo_provider)
+        
+        # AI Model Selection (depends on provider)
+        lbl_model = QLabel("⚙️ AI Model")
+        lbl_model.setStyleSheet("font-size: 10pt; margin-top: 8px;")
+        form_layout.addWidget(lbl_model)
+        
+        self.combo_model = QComboBox()
+        self._update_model_list()  # Populate initial models
+        form_layout.addWidget(self.combo_model)
+        
+        # Connect provider change to update models
+        self.combo_provider.currentIndexChanged.connect(self._update_model_list)
+        
+        
         # Auto organize folders checkbox
         self.chk_auto_organize = QCheckBox("📁 Auto-create script folders (script_name/voice, /image, /video)")
         self.chk_auto_organize.setChecked(False)
@@ -595,7 +629,7 @@ class ProjectDialog(QDialog):
         """)
         info.setWordWrap(True)
         layout.addWidget(info)
-        
+    
         # Buttons
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
@@ -647,6 +681,29 @@ class ProjectDialog(QDialog):
         # Focus on name field
         self.txt_name.setFocus()
     
+    def _update_model_list(self):
+        """Update model list based on selected provider"""
+        provider = self.combo_provider.currentData()
+        self.combo_model.clear()
+        
+        if provider == "Groq":
+            # Groq models (fast & free)
+            self.combo_model.addItem("Llama 3.3 70B Versatile (Recommended)", "llama-3.3-70b-versatile")
+            self.combo_model.addItem("Llama 3.1 70B Versatile", "llama-3.1-70b-versatile")
+            self.combo_model.addItem("Llama 3.1 8B Instant", "llama-3.1-8b-instant")
+            self.combo_model.addItem("Mixtral 8x7B", "mixtral-8x7b-32768")
+        elif provider == "ChatGPT":
+            # OpenAI models
+            self.combo_model.addItem("GPT-4o (Recommended)", "gpt-4o")
+            self.combo_model.addItem("GPT-4o Mini", "gpt-4o-mini")
+            self.combo_model.addItem("GPT-4 Turbo", "gpt-4-turbo-preview")
+            self.combo_model.addItem("GPT-3.5 Turbo", "gpt-3.5-turbo")
+        elif provider == "Gemini":
+            # Gemini models
+            self.combo_model.addItem("Gemini 2.0 Flash (Recommended)", "gemini-2.0-flash-exp")
+            self.combo_model.addItem("Gemini 1.5 Pro", "gemini-1.5-pro")
+            self.combo_model.addItem("Gemini 1.5 Flash", "gemini-1.5-flash")
+    
     def get_values(self) -> Tuple[str, str]:
         """Get name and description - legacy method"""
         return self.txt_name.text().strip(), self.txt_desc.toPlainText().strip()
@@ -658,7 +715,9 @@ class ProjectDialog(QDialog):
             "description": self.txt_desc.toPlainText().strip(),
             "num_prompts": self.spin_num_prompts.value(),
             "voice_id": self.combo_voice.currentData(),
-            "auto_organize_folders": self.chk_auto_organize.isChecked()
+            "auto_organize_folders": self.chk_auto_organize.isChecked(),
+            "prompt_provider": self.combo_provider.currentData(),
+            "prompt_model": self.combo_model.currentData()
         }
     
     def accept(self):
@@ -5371,7 +5430,9 @@ class MainWindow(QMainWindow):
                 "num_prompts": num_prompts,  # Random 12-24
                 "voice_id": data.get("voice_id", ""),
                 "auto_workflow": True,
-                "auto_organize_folders": data.get("auto_organize_folders", False)
+                "auto_organize_folders": data.get("auto_organize_folders", False),
+                "prompt_provider": data.get("prompt_provider", "Groq"),
+                "prompt_model": data.get("prompt_model", "llama-3.3-70b-versatile")
             }
             
             created_project = self.api_client.create_project(project_data)
@@ -5424,6 +5485,20 @@ class MainWindow(QMainWindow):
         if hasattr(project, 'auto_organize_folders'):
             dialog.chk_auto_organize.setChecked(project.auto_organize_folders)
         
+        # Pre-fill prompt provider and model if exists
+        if hasattr(project, 'prompt_provider') and project.prompt_provider:
+            idx = dialog.combo_provider.findData(project.prompt_provider)
+            if idx >= 0:
+                dialog.combo_provider.setCurrentIndex(idx)
+        
+        if hasattr(project, 'prompt_model') and project.prompt_model:
+            # Update model list for the current provider
+            dialog._update_model_list()
+            # Find and set the model
+            idx = dialog.combo_model.findData(project.prompt_model)
+            if idx >= 0:
+                dialog.combo_model.setCurrentIndex(idx)
+        
         if dialog.exec():
             data = dialog.get_all_values()
             
@@ -5438,7 +5513,9 @@ class MainWindow(QMainWindow):
                 "num_prompts": num_prompts,  # Random 12-24
                 "voice_id": data.get("voice_id", ""),
                 "auto_workflow": True,
-                "auto_organize_folders": data.get("auto_organize_folders", False)
+                "auto_organize_folders": data.get("auto_organize_folders", False),
+                "prompt_provider": data.get("prompt_provider", "Groq"),
+                "prompt_model": data.get("prompt_model", "llama-3.3-70b-versatile")
             }
             
             success = self.api_client.update_project(project.id, project_data)
@@ -5706,6 +5783,7 @@ class MainWindow(QMainWindow):
         # Override project num_prompts with random value
         project.num_prompts = num_prompts
         
+        # Get provider and model from project
         # Confirm
         reply = QMessageBox.question(
             self,
@@ -5715,7 +5793,7 @@ class MainWindow(QMainWindow):
             f"🎨 Images: {num_prompts} prompts (random 12-24)\n\n"
             f"This will automatically:\n"
             f"1. Create folder: C:\\WorkFlow\\{project.name}\\\n"
-            f"2. Parse script with Groq AI\n"
+            f"2. Parse script with AI (set in Image Generator tab)\n"
             f"3. Generate {num_prompts} image prompts\n"
             f"4. Switch to Image tab\n"
             f"5. Start generating images\n\n"
@@ -7338,8 +7416,46 @@ class MainWindow(QMainWindow):
         _apply_palette(getattr(self, "hist_search", None))
         _apply_palette(getattr(self, "edit_outdir", None))
 
+# ============================== Single Instance Check ===============================
+def check_single_instance():
+    """
+    Ensure only one instance of the application is running.
+    Uses a socket-based lock mechanism.
+    Returns True if this is the first instance, False otherwise.
+    """
+    lock_port = 54321  # Fixed port for single instance check
+    lock_socket = None
+    
+    try:
+        # Try to bind to the lock port
+        lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        lock_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        lock_socket.bind(('127.0.0.1', lock_port))
+        lock_socket.listen(1)
+        # Successfully bound - this is the first instance
+        return True, lock_socket
+    except OSError:
+        # Port already in use - another instance is running
+        if lock_socket:
+            try:
+                lock_socket.close()
+            except:
+                pass
+        return False, None
+
 # ============================== Entry ===============================
 def main():
+    # Check for single instance BEFORE creating QApplication
+    is_first_instance, lock_socket = check_single_instance()
+    if not is_first_instance:
+        # Create temporary QApplication just for message box
+        temp_app = QApplication(sys.argv)
+        QMessageBox.warning(
+            None, "Ứng dụng đã chạy",
+            "WorkFlow Tool đã được mở trên máy này.\n\nChỉ có thể mở 1 ứng dụng tại một thời điểm."
+        )
+        sys.exit(1)
+    
     app = QApplication(sys.argv)
     
     # Show login dialog first
@@ -7357,12 +7473,13 @@ def main():
         result = login_dialog.exec()
         
         if result != QDialog.Accepted or not api_client_ref[0]:
-            # User cancelled login or login failed
-            QMessageBox.warning(
-                None, "Login Required",
-                "Bạn phải đăng nhập để sử dụng WorkFlow Tool."
-            )
-            return 0
+            # User cancelled login or login failed - exit app completely
+            if lock_socket:
+                try:
+                    lock_socket.close()
+                except:
+                    pass
+            sys.exit(0)  # Exit app when login dialog is closed without login
         
         # Login successful, create main window
         win = MainWindow()
@@ -7407,7 +7524,23 @@ def main():
         print("⚠️ Login dialog not available - running without authentication")
     
     if not getattr(win, "license_ok", True):
+        if lock_socket:
+            try:
+                lock_socket.close()
+            except:
+                pass
         return 0
+    
+    # Store lock_socket reference for cleanup on exit
+    def cleanup_lock():
+        if lock_socket:
+            try:
+                lock_socket.close()
+            except:
+                pass
+    
+    # Cleanup lock socket when app exits
+    app.aboutToQuit.connect(cleanup_lock)
     
     win.show()
     sys.exit(app.exec())

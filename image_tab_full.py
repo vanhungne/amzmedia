@@ -12,10 +12,9 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QTextEdit, QCheckBox, QSpinBox, QProgressBar,
     QScrollArea, QFrame, QLineEdit, QFileDialog, QMessageBox, QComboBox,
     QDialog, QGridLayout, QGraphicsDropShadowEffect, QSizePolicy, QTabWidget,
-    QGroupBox, QSlider, QToolButton, QMenu, QButtonGroup, QRadioButton,
-    QProgressDialog
+    QGroupBox, QSlider, QToolButton, QMenu, QButtonGroup, QRadioButton
 )
-from PySide6.QtCore import Qt, Signal, QThread, QSize, QPropertyAnimation, QEasingCurve, QPoint, QRect, QTimer
+from PySide6.QtCore import Qt, Signal, QThread, QSize, QPropertyAnimation, QEasingCurve, QPoint, QRect, QTimer, Slot, QMetaObject, Q_ARG
 from PySide6.QtGui import QPixmap, QPalette, QColor, QFont, QMouseEvent, QPainter, QPen, QCursor, QIcon
 
 try:
@@ -61,6 +60,45 @@ AR_IMAGEN = ["1:1", "3:4", "4:3", "9:16", "16:9"]
 AR_GEMINI = ["1:1", "3:4", "4:3", "9:16", "16:9", "2:3", "3:2", "4:5", "5:4", "21:9"]
 IMAGEN_SIZES = ["1K", "2K"]
 PERSON_GEN = ["dont_allow", "allow_adult", "allow_all"]
+
+# Default System Prompt for Script Analysis (shared across all AI providers)
+DEFAULT_SCRIPT_ANALYSIS_PROMPT = """You are an AI that creates image generation prompts for emotional YouTube videos targeting American audience. Split the script into EXACTLY {x} parts and create ONE English prompt for each part.
+
+CRITICAL RULES:
+- 100% ENGLISH ONLY - absolutely NO Vietnamese, NO translations, NO summaries, NO explanations
+- Style: ultra-realistic photo, 16:9
+- 2 main characters: 1 protagonist (calm, composed) + 1 antagonist (angry, aggressive)
+- Add 2-5 background characters to amplify emotions (judging, laughing, recording...)
+- Characters MUST interact with EACH OTHER, NEVER look at camera
+- Physical descriptions in parentheses ( ): skin tone, clothing details, hair color/style
+- CRITICAL: Copy EXACT character descriptions from first prompt to ALL subsequent prompts
+  - NEVER use "same outfit", "same look", "as before"
+  - ALWAYS repeat full description: (fair skin, wearing elegant navy blue dress, blonde wavy hair)
+- Bright, clear lighting with high contrast
+- American/European appearance - NO black hair
+- FORBIDDEN words: "revealing cleavage", "showing cleavage", "emerald green eyes"
+
+STRICT OUTPUT FORMAT - THIS IS EXTREMELY CRITICAL:
+DO NOT include ANY of these:
+- NO "Scene 1", "Scene 2", etc.
+- NO "Phân cảnh 1", "Phân cảnh 2", etc.  
+- NO "**Prompt vẽ ảnh:**" or "**Prompt:**" labels
+- NO "**Tóm tắt ngắn:**" (Vietnamese summary)
+- NO "**Bản dịch prompt:**" (Vietnamese translation)
+- NO headers, NO labels, NO section markers
+- NO Vietnamese text ANYWHERE
+- NO "---" separators
+- NO "###" markdown headers
+
+ONLY output pure English image prompts directly!
+Separate each prompt with double line break (blank line between prompts).
+
+CORRECT OUTPUT FORMAT:
+Ultra-realistic photo, 16:9. A woman (fair skin, wearing elegant navy blue dress, blonde wavy hair) standing confidently in a bright modern living room, looking at a man (tan skin, wearing casual grey sweater, brown hair) who is angrily pointing at her with raised voice. 3 neighbors in the background (varied appearances) watching with judgmental expressions, some whispering. Natural daylight streaming through large windows, contemporary furniture, high contrast lighting.
+
+Ultra-realistic photo, 16:9. A woman (fair skin, wearing elegant navy blue dress, blonde wavy hair) calmly walking away while a man (tan skin, wearing casual grey sweater, brown hair) continues shouting behind her with clenched fists. 4 onlookers (varied appearances) in background, some shaking heads, others recording with phones. Bright outdoor setting, modern apartment courtyard, sharp focus on main characters.
+
+(Continue for all {x} scenes - ONLY English prompts, nothing else)"""
 
 PUBLIC_KEY_PEM = b"""-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA8Sp6u0xiwQDdWlinmmbS
@@ -192,18 +230,172 @@ def crop_to_16_9(pixmap: QPixmap, target_width: int, target_height: int) -> QPix
     # Scale to target size with smooth transformation
     return cropped.scaled(target_width, target_height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
 
+# ==================== PROMPT CLEANING HELPER ====================
+def clean_prompt_prefix(prompt: str) -> str:
+    """Remove common prefixes like 'Prompt vẽ ảnh:', 'Prompt:', etc."""
+    cleaned = prompt.strip()
+    
+    # Remove leading "- "
+    if cleaned.startswith("- "):
+        cleaned = cleaned[2:].strip()
+    
+    # Remove "Prompt vẽ ảnh:", "Prompt:", etc. prefixes
+    for prefix in ["Prompt vẽ ảnh:", "Prompt về ảnh:", "Image Prompt:", "Prompt:", "prompt:"]:
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix):].strip()
+            break
+    
+    return cleaned
+
+# ==================== HELPER: PARSE PROMPTS FROM AI RESPONSE ====================
+def parse_prompts_from_response(content: str) -> List[str]:
+    """
+    Parse English prompts from AI response.
+    Handles two formats:
+    1. OLD FORMAT (with labels):
+        Scene 1 / Phân cảnh 1
+        **Tóm tắt ngắn:** ... (Vietnamese - skip)
+        **Prompt vẽ ảnh:** 
+        ultra-realistic photo... (English - extract this)
+        **Bản dịch prompt:** ... (Vietnamese - skip)
+    
+    2. NEW FORMAT (clean, prompts only):
+        Ultra-realistic photo, 16:9. A woman...
+        
+        Ultra-realistic photo, 16:9. The same woman...
+    """
+    import re
+    
+    prompts = []
+    lines = content.split('\n')
+    
+    print(f"[PARSER] Starting parse, total lines: {len(lines)}")
+    
+    # First, try to find prompts with "**Prompt vẽ ảnh:**" label (old format)
+    i = 0
+    found_labeled_prompts = False
+    label_count = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        # Check if this line contains "**Prompt vẽ ảnh:**" or similar markers
+        if any(marker in line.lower() for marker in ["**prompt vẽ ảnh:**", "**prompt:**", "image prompt:"]):
+            found_labeled_prompts = True
+            label_count += 1
+            print(f"[PARSER] Found prompt label #{label_count} at line {i}: {line[:50]}...")
+            # The actual English prompt is on the next non-empty line
+            i += 1
+            while i < len(lines):
+                next_line = lines[i].strip()
+                
+                # Skip empty lines
+                if not next_line:
+                    i += 1
+                    continue
+                
+                # Stop if we hit another section marker (Vietnamese)
+                if any(marker in next_line.lower() for marker in [
+                    "**bản dịch", "**tóm tắt", "**dịch:", "---", "###", "scene ", "phân cảnh"
+                ]):
+                    break
+                
+                # This should be the English prompt
+                # Clean up markdown formatting
+                cleaned = next_line.strip()
+                cleaned = re.sub(r'^\*\*.*?\*\*:?\s*', '', cleaned)  # Remove **Label:**
+                cleaned = cleaned.strip('*').strip('-').strip()
+                
+                # Check length first
+                if len(cleaned) < 40:
+                    print(f"[REJECT] Too short ({len(cleaned)} chars): {cleaned[:50]}")
+                    i += 1
+                    continue
+                
+                # Verify it's English (contains typical English prompt keywords)
+                if any(keyword in cleaned.lower() for keyword in [
+                    "photo", "realistic", "image", "woman", "man", "person", 
+                    "wearing", "background", "lighting", "cinematic", "scene",
+                    "year-old", "caucasian", "asian", "standing", "sitting", "ultra",
+                    "bedroom", "living room", "kitchen", "office", "street", "park"
+                ]):
+                    print(f"[EXTRACTED LABELED PROMPT]: {cleaned[:80]}...")
+                    prompts.append(cleaned)
+                    break
+                else:
+                    print(f"[REJECT] No English keywords in: {cleaned[:80]}...")
+                
+                i += 1
+        
+        i += 1
+    
+    # If we found labeled prompts, return them
+    if prompts:
+        print(f"[PARSER] ✅ Extracted {len(prompts)} labeled prompts successfully")
+        return prompts
+    
+    if found_labeled_prompts and not prompts:
+        print(f"[PARSER] ⚠️ Found {label_count} prompt labels but extracted 0 prompts!")
+        print(f"[PARSER] This means all prompts were rejected by validation")
+    
+    # Otherwise, try parsing as clean format (NEW FORMAT - prompts only, no labels)
+    print("[PARSER] No labeled prompts found, trying clean format...")
+    paragraphs = content.split('\n\n')  # Split by double newline
+    print(f"[PARSER] Split into {len(paragraphs)} paragraphs")
+    
+    for para in paragraphs:
+        cleaned = para.strip()
+        
+        # Skip empty paragraphs
+        if not cleaned:
+            continue
+        
+        # Skip intro text
+        if any(x in cleaned.lower() for x in [
+            "here are", "below are", "dưới đây là", "following are",
+            "i'll split", "i will split", "let me", "first,"
+        ]):
+            print(f"[SKIP INTRO PARA]: {cleaned[:50]}...")
+            continue
+        
+        # Skip short paragraphs
+        if len(cleaned) < 50:
+            print(f"[SKIP SHORT PARA]: {cleaned[:50]}")
+            continue
+        
+        # Skip Vietnamese text
+        if any(marker in cleaned.lower() for marker in [
+            "tóm tắt:", "bản dịch:", "dịch:", "phân cảnh"
+        ]):
+            print(f"[SKIP VIETNAMESE]: {cleaned[:50]}...")
+            continue
+        
+        # Accept if it looks like an English image prompt
+        if any(keyword in cleaned.lower() for keyword in [
+            "photo", "realistic", "woman", "man", "wearing", 
+            "background", "lighting", "standing", "sitting", "ultra"
+        ]):
+            print(f"[EXTRACTED CLEAN PROMPT]: {cleaned[:80]}...")
+            prompts.append(cleaned)
+    
+    if prompts:
+        print(f"[PARSER] ✅ Extracted {len(prompts)} clean prompts successfully")
+    else:
+        print(f"[PARSER] ❌ Failed to extract any prompts from response")
+    
+    return prompts
+
 # ==================== GROQ AI SCRIPT ANALYSIS ====================
 def analyze_script_with_groq(script: str, num_parts: int, groq_api_key: str, custom_system_prompt: str = "") -> List[str]:
     """
     Gửi script đến Groq API để phân tích và tạo prompts theo quy tắc.
     
     Args:
-        script: Kịch bản cần phân tích
+        script: Nội dung script cần phân tích
         num_parts: Số lượng prompts cần tạo
         groq_api_key: API key của Groq
         custom_system_prompt: System prompt tùy biến từ Project (nếu có)
     
-    Returns: List các prompts đã được tạo ra (giới hạn theo num_parts)
+    Returns: List các prompts đã được tạo ra.
     """
     if not requests:
         raise Exception("requests library not installed")
@@ -211,47 +403,23 @@ def analyze_script_with_groq(script: str, num_parts: int, groq_api_key: str, cus
     if not groq_api_key or not groq_api_key.strip():
         raise Exception("Groq API key is empty")
     
-    # System prompt mặc định - chỉ dùng khi Project không có custom prompt
-    default_system_prompt = """Bạn là GPT chuyên xử lý các kịch bản dài bằng tiếng Anh để phục vụ sản xuất video cảm xúc dành cho khán giả YouTube tại Mỹ.
-
-Quy trình tự động xử lý như sau:
-
-1. Đọc hiểu kịch bản (Simple Woman - Nữ chính hiền lành, Nam phản diện tức giận)
-2. Chia kịch bản thành {x} phần như yêu cầu
-4. Prompt cần phải có sự đồng nhất chi tiết về trang phục, màu da và ngoại hình của các nhân vật trong toàn bộ các phân cảnh (nội dung được giữ nguyên từ prompt đầu tiên, KHÔNG DÙNG cụm "same outfit")
-5. Các nhân vật trong phân cảnh phải nhìn, tương tác với nhau
-6. Mô tả ngoại hình nhân vật (màu tóc, màu da, quần áo...) phải đặt trong dấu ngoặc đơn () theo đúng format chuẩn
-7. Dưới mỗi phân cảnh, có:
-   - Tóm tắt ngắn bằng tiếng Việt
-   - Một prompt vẽ ảnh phù hợp, đồng nhất trang phục và đặc điểm nhân vật chính/phụ giữa các phân cảnh
-
-NGUYÊN TẮC VIẾT PROMPT (ÁP DỤNG CHO MỌI PROMPT):
-- Ngôn ngữ: tiếng Anh
-- Style mặc định: ultra-realistic photo, 16:9
-- Luôn có 2 nhân vật chính (nam & nữ) HOẶC (nữ & nữ): 1 chính diện và 1 phản diện
-- Nhân vật chính: điềm tĩnh, nội tâm sâu sắc
-- Phản diện: cảm xúc mạnh, khó kiểm soát (chửi, la hét, chỉ tay, khiêu khích...)
-- Có 2-5+ nhân vật nền góp phần tăng cảm xúc (cười nhạo, khinh thường...)
-- Ánh sáng tươi sáng, rõ ràng, màu sắc tương phản
-- Nhân vật: người Mỹ hoặc châu Âu, màu tóc KHÔNG MÔ TÃ MÀU ĐEN
-- Các nhân vật trong prompt phải tương tác với nhau và đặc biệt KHÔNG NHÌN THẲNG VÀO MÀNG HÌNH hay phá vỡ bức tường thứ 4
-- Một bản dịch của prompt bằng tiếng Việt ở bên dưới mỗi prompt, KHÔNG ĐỂ TRONG CODE BOX
-- Khi chia thành nhiều prompt (n hình), GPT KHÔNG BAO GIỜ được dùng từ "same outfit" hoặc "same look". Thay vào đó, phải giữ nguyên phần mô tả ngoại hình từ prompt đầu tiên (gồm màu da, quần áo, tóc...) và copy y hệt vào các prompt sau
-- Mô tả về ngoại hình của nhân vật trong prompt phải được đặt trong ( ), nếu mô tả không phải ngoại hình sẽ phải nằm ngoài ( )
-- Những từ KHÔNG ĐƯỢC xuất hiện trong prompt: revealing cleavage, showing cleavage, emerald green eyes
-
-FORMAT OUTPUT:
-Chỉ trả về các prompt tiếng Anh, mỗi prompt trên một dòng. KHÔNG CẦN tiêu đề "Phân cảnh X" hay bản dịch tiếng Việt. Chỉ cần prompt thuần tiếng Anh, mỗi prompt một dòng, ngăn cách bằng dấu xuống dòng đôi.
-
-VÍ DỤ FORMAT OUTPUT:
-Ultra-realistic photo, 16:9. A woman (fair skin, wearing elegant navy blue dress, blonde wavy hair) standing confidently in a bright modern living room, looking at a man (tan skin, wearing casual grey sweater, brown hair) who is angrily pointing at her with raised voice. 3 neighbors in the background (varied appearances) watching with judgmental expressions, some whispering. Natural daylight streaming through large windows, contemporary furniture, high contrast lighting.
-
-Ultra-realistic photo, 16:9. A woman (fair skin, wearing elegant navy blue dress, blonde wavy hair) calmly walking away while a man (tan skin, wearing casual grey sweater, brown hair) continues shouting behind her with clenched fists. 4 onlookers (varied appearances) in background, some shaking heads, others recording with phones. Bright outdoor setting, modern apartment courtyard, sharp focus on main characters."""
+    # Use custom prompt from Project if provided, otherwise use shared default
+    system_prompt = custom_system_prompt if custom_system_prompt.strip() else DEFAULT_SCRIPT_ANALYSIS_PROMPT
     
-    # Use custom system prompt from Project if provided, otherwise use default
-    system_prompt = custom_system_prompt.strip() if custom_system_prompt and custom_system_prompt.strip() else default_system_prompt
+    # Check if custom prompt contains Vietnamese instructions (warning only)
+    if custom_system_prompt and any(vn_word in custom_system_prompt.lower() for vn_word in [
+        "tiếng việt", "bản dịch", "phân cảnh", "tóm tắt", "vietnamese"
+    ]):
+        print("[WARNING] ⚠️ Custom prompt from project contains Vietnamese instructions!")
+        print("[WARNING] Adding English-only override to ensure prompts are in English")
     
-    user_prompt = f"Hãy phân tích kịch bản sau và chia thành CHÍNH XÁC {num_parts} phần, tạo prompt cho mỗi phần theo đúng quy tắc trên.\n\nQUAN TRỌNG: Chỉ trả về ĐÚNG {num_parts} prompts, không nhiều hơn, không ít hơn.\n\n{script}"
+    # Replace {x} placeholder with actual num_parts
+    system_prompt = system_prompt.replace("{x}", str(num_parts))
+    
+    # CRITICAL: Always enforce English output, even if custom prompt says otherwise
+    system_prompt += "\n\nCRITICAL OVERRIDE: Output MUST be 100% ENGLISH ONLY. Absolutely NO Vietnamese, NO translations, NO summaries. ONLY pure English image prompts."
+
+    user_prompt = f"Analyze this script and split it into EXACTLY {num_parts} parts. Create one English image generation prompt for each part following the rules above. OUTPUT IN ENGLISH ONLY:\n\n{script}"
     
     # Call Groq API
     headers = {
@@ -266,7 +434,7 @@ Ultra-realistic photo, 16:9. A woman (fair skin, wearing elegant navy blue dress
             {"role": "user", "content": user_prompt}
         ],
         "temperature": 0.7,
-        "max_tokens": 4000
+        "max_tokens": 6000  # Groq's safe limit (much lower than OpenAI/Gemini)
     }
     
     try:
@@ -276,6 +444,19 @@ Ultra-realistic photo, 16:9. A woman (fair skin, wearing elegant navy blue dress
             json=payload,
             timeout=60
         )
+        
+        # Better error handling for debugging
+        if response.status_code != 200:
+            error_detail = response.text
+            print(f"[GROQ ERROR] Status: {response.status_code}")
+            print(f"[GROQ ERROR] Response: {error_detail}")
+            try:
+                error_json = response.json()
+                if "error" in error_json:
+                    print(f"[GROQ ERROR] Message: {error_json['error']}")
+            except:
+                pass
+        
         response.raise_for_status()
         
         result = response.json()
@@ -283,145 +464,218 @@ Ultra-realistic photo, 16:9. A woman (fair skin, wearing elegant navy blue dress
         
         # DEBUG: Print raw response
         print(f"[GROQ AI RAW RESPONSE]:\n{content}\n{'='*80}")
+        print(f"[GROQ DEBUG] Requested {num_parts} prompts, response length: {len(content)} chars")
         
-        # Parse prompts - split by double newline OR single newline if no double
-        if "\n\n" in content:
-            prompts = [p.strip() for p in content.split("\n\n") if p.strip()]
-        else:
-            prompts = [p.strip() for p in content.split("\n") if p.strip()]
+        # Use new parsing logic to extract English prompts only
+        final_prompts = parse_prompts_from_response(content)
         
-        print(f"[PARSED PROMPTS COUNT]: {len(prompts)}")
-        
-        # Filter out ONLY obvious headers/metadata
-        final_prompts = []
-        for i, p in enumerate(prompts):
-            # Skip if it's a title line like "Phân cảnh 1:", "Scene 1:", "Part 1:"
-            if any(p.startswith(x) for x in ["Phân cảnh", "Scene", "Part ", "Prompt ", "**"]):
-                print(f"[SKIP HEADER {i}]: {p[:50]}...")
-                continue
-            
-            # Skip if it's too short (likely not a full prompt)
-            if len(p) < 30:
-                print(f"[SKIP SHORT {i}]: {p}")
-                continue
-            
-            # Accept if it looks like a valid prompt (less strict)
-            # Just check if it's not Vietnamese translation or metadata
-            if not any(keyword in p.lower() for keyword in ["tóm tắt:", "dịch:", "bản dịch:"]):
-                print(f"[ACCEPT {i}]: {p[:80]}...")
-                final_prompts.append(p)
-            else:
-                print(f"[SKIP TRANSLATION {i}]: {p[:50]}...")
-        
+        print(f"[GROQ DEBUG] Parser extracted {len(final_prompts)} prompts from response")
         print(f"[FINAL PROMPTS COUNT]: {len(final_prompts)}")
         
-        # Return final_prompts, but if empty, return all prompts as fallback
         if not final_prompts:
-            print("[WARNING] No prompts passed filter, returning all parsed prompts")
-            final_prompts = prompts
+            print("[WARNING] No prompts extracted, check AI response format")
+            return []
         
-        # ⚠️ QUAN TRỌNG: Giới hạn số lượng prompts theo num_parts
+        # Warn if AI returned fewer prompts than requested
+        if len(final_prompts) < num_parts:
+            print(f"[WARNING] ⚠️ AI returned only {len(final_prompts)} prompts, but {num_parts} were requested!")
+            print(f"[WARNING] Script may be too short, or AI did not follow instructions properly")
+        
+        # Limit to requested number
         if len(final_prompts) > num_parts:
-            print(f"[LIMIT] AI trả về {len(final_prompts)} prompts, giới hạn về {num_parts} như yêu cầu")
+            print(f"[LIMIT] AI returned {len(final_prompts)} prompts, limiting to {num_parts}")
             final_prompts = final_prompts[:num_parts]
-        elif len(final_prompts) < num_parts:
-            print(f"[WARNING] AI chỉ trả về {len(final_prompts)} prompts, ít hơn {num_parts} yêu cầu")
         
         return final_prompts
     
     except Exception as e:
         raise Exception(f"Groq API Error: {str(e)}")
 
-def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str, custom_system_prompt: str = "", model: str = "gpt-5") -> List[str]:
+# ==================== OPENAI/CHATGPT SCRIPT ANALYSIS ====================
+def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str, model: str, custom_system_prompt: str = "") -> List[str]:
     """
-    Use OpenAI Chat Completions (ChatGPT) to analyze the script and generate image prompts.
+    Analyze script using OpenAI/ChatGPT API.
+    
+    Args:
+        script: Script content to analyze
+        num_parts: Number of prompts to generate
+        openai_api_key: OpenAI API key
+        model: Model name (gpt-5, o3)
+        custom_system_prompt: Custom system prompt from Project (if any)
+    
+    Returns: List of prompts
     """
     if not requests:
         raise Exception("requests library not installed")
+    
     if not openai_api_key or not openai_api_key.strip():
         raise Exception("OpenAI API key is empty")
-
-    default_system_prompt = (
-        "You are an expert at creating high quality, cinematic image generation prompts. "
-        "Split the user script into exactly {x} parts and produce one concise English prompt per part. "
-        "Follow these rules: 16:9 ultra-realistic photo; two main characters interacting; maintain clothing and physical traits across prompts (no 'same outfit' wording); put appearance inside parentheses; no emerald green eyes; do not add Vietnamese translations; output prompts only, one per line, separated by a blank line."
-    )
-    system_prompt = custom_system_prompt.strip() if custom_system_prompt and custom_system_prompt.strip() else default_system_prompt
+    
+    # Use custom prompt from Project if provided, otherwise use shared default
+    system_prompt = custom_system_prompt if custom_system_prompt.strip() else DEFAULT_SCRIPT_ANALYSIS_PROMPT
+    
+    # Check if custom prompt contains Vietnamese instructions
+    if custom_system_prompt and any(vn_word in custom_system_prompt.lower() for vn_word in [
+        "tiếng việt", "bản dịch", "phân cảnh", "tóm tắt", "vietnamese"
+    ]):
+        print("[WARNING] ⚠️ Custom prompt from project contains Vietnamese instructions!")
+        print("[WARNING] Adding English-only override to ensure prompts are in English")
+    
     system_prompt = system_prompt.replace("{x}", str(num_parts))
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Please split into exactly {num_parts} prompts and return only the prompts.\n\nScript:\n{script}"},
-    ]
-
+    
+    # CRITICAL: Always enforce English output, even if custom prompt says otherwise
+    system_prompt += "\n\nCRITICAL OVERRIDE: Output MUST be 100% ENGLISH ONLY. Absolutely NO Vietnamese, NO translations, NO summaries. ONLY pure English image prompts."
+    
+    user_prompt = f"Analyze this script and split it into EXACTLY {num_parts} parts. Create one English image generation prompt for each part following the rules above. OUTPUT IN ENGLISH ONLY:\n\n{script}"
+    
     headers = {
         "Authorization": f"Bearer {openai_api_key}",
-        "Content-Type": "application/json",
+        "Content-Type": "application/json"
     }
+    
     payload = {
         "model": model,
-        "messages": messages,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
         "temperature": 0.7,
+        "max_tokens": 8000  # Increased from 4000 to support more prompts
     }
-
+    
     try:
-        resp = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=60)
-        resp.raise_for_status()
-        data = resp.json()
-        content = data["choices"][0]["message"]["content"].strip()
-
-        # Split into prompts by blank lines first, then by newlines
-        if "\n\n" in content:
-            prompts = [p.strip() for p in content.split("\n\n") if p.strip()]
-        else:
-            prompts = [p.strip() for p in content.split("\n") if p.strip()]
-
-        # Basic filtering similar to Groq path
-        final_prompts: List[str] = []
-        for p in prompts:
-            if any(p.startswith(x) for x in ["Phân cảnh", "Scene", "Part ", "Prompt ", "**"]):
-                continue
-            if len(p) < 30:
-                continue
-            if not any(keyword in p.lower() for keyword in ["tóm tắt:", "dịch:", "bản dịch:"]):
-                final_prompts.append(p)
-
+        response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=120
+        )
+        response.raise_for_status()
+        
+        result = response.json()
+        content = result["choices"][0]["message"]["content"].strip()
+        
+        print(f"[OPENAI AI RAW RESPONSE]:\n{content}\n{'='*80}")
+        print(f"[OPENAI DEBUG] Requested {num_parts} prompts, response length: {len(content)} chars")
+        
+        # Use new parsing logic to extract English prompts only
+        final_prompts = parse_prompts_from_response(content)
+        
+        print(f"[OPENAI DEBUG] Parser extracted {len(final_prompts)} prompts from response")
+        print(f"[FINAL PROMPTS COUNT]: {len(final_prompts)}")
+        
         if not final_prompts:
-            final_prompts = prompts
-
+            print("[WARNING] No prompts extracted, check AI response format")
+            return []
+        
+        # Warn if AI returned fewer prompts than requested
+        if len(final_prompts) < num_parts:
+            print(f"[WARNING] ⚠️ AI returned only {len(final_prompts)} prompts, but {num_parts} were requested!")
+            print(f"[WARNING] Script may be too short, or AI did not follow instructions properly")
+        
         if len(final_prompts) > num_parts:
+            print(f"[LIMIT] AI returned {len(final_prompts)} prompts, limiting to {num_parts}")
             final_prompts = final_prompts[:num_parts]
+        
         return final_prompts
+    
     except Exception as e:
-        raise Exception(f"OpenAI error: {e}")
+        raise Exception(f"OpenAI API Error: {str(e)}")
 
-def analyze_script_with_gemini_text(script: str, num_parts: int, gemini_api_key: str, custom_system_prompt: str = "", model: str = "gemini-2.5-pro") -> List[str]:
+# ==================== GEMINI SCRIPT ANALYSIS ====================
+def analyze_script_with_gemini(script: str, num_parts: int, gemini_api_key: str, model: str, custom_system_prompt: str = "") -> List[str]:
+    """
+    Analyze script using Gemini API.
+    
+    Args:
+        script: Script content to analyze
+        num_parts: Number of prompts to generate
+        gemini_api_key: Gemini API key
+        model: Model name (gemini-2.0-flash-exp, gemini-2.5-pro)
+        custom_system_prompt: Custom system prompt from Project (if any)
+    
+    Returns: List of prompts
+    """
+    try:
+        from google import genai
+        from google.genai import types
+    except:
+        raise Exception("google-genai library not installed")
+    
     if not gemini_api_key or not gemini_api_key.strip():
         raise Exception("Gemini API key is empty")
-    client = genai.Client(api_key=gemini_api_key)
-    system_prompt = (
-        "You are an expert at creating high quality cinematic image prompts. "
-        "Split script into exactly {x} parts and output prompts only, one per line, with blank line between."
-    )
-    system_prompt = (custom_system_prompt.strip() or system_prompt).replace("{x}", str(num_parts))
-    resp = client.models.generate_content(
-        model=model,
-        contents=[
-            {"role": "user", "parts": [
-                {"text": system_prompt},
-                {"text": f"Script:\n{script}"}
-            ]}
-        ],
-        config=GenerateContentConfig(response_modalities=[Modality.TEXT])
-    )
-    text = (getattr(resp, "text", None) or "").strip()
-    if "\n\n" in text:
-        parts = [p.strip() for p in text.split("\n\n") if p.strip()]
-    else:
-        parts = [p.strip() for p in text.split("\n") if p.strip()]
-    if len(parts) > num_parts:
-        parts = parts[:num_parts]
-    return parts
+    
+    # Use custom prompt from Project if provided, otherwise use shared default
+    system_prompt = custom_system_prompt if custom_system_prompt.strip() else DEFAULT_SCRIPT_ANALYSIS_PROMPT
+    
+    # Check if custom prompt contains Vietnamese instructions
+    if custom_system_prompt and any(vn_word in custom_system_prompt.lower() for vn_word in [
+        "tiếng việt", "bản dịch", "phân cảnh", "tóm tắt", "vietnamese"
+    ]):
+        print("[WARNING] ⚠️ Custom prompt from project contains Vietnamese instructions!")
+        print("[WARNING] Adding English-only override to ensure prompts are in English")
+    
+    system_prompt = system_prompt.replace("{x}", str(num_parts))
+    
+    # CRITICAL: Always enforce English output, even if custom prompt says otherwise
+    system_prompt += "\n\nCRITICAL OVERRIDE: Output MUST be 100% ENGLISH ONLY. Absolutely NO Vietnamese, NO translations, NO summaries. ONLY pure English image prompts."
+    
+    user_prompt = f"Analyze this script and split it into EXACTLY {num_parts} parts. Create one English image generation prompt for each part following the rules above. OUTPUT IN ENGLISH ONLY:\n\n{script}"
+    
+    try:
+        client = genai.Client(api_key=gemini_api_key)
+        
+        # Use system instruction for Gemini
+        response = client.models.generate_content(
+            model=model,
+            contents=[
+                {"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]}
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0.7,
+                max_output_tokens=8000  # Increased from 4000 to support more prompts
+            )
+        )
+        
+        content = response.text.strip()
+        
+        print(f"[GEMINI AI RAW RESPONSE]:\n{content}\n{'='*80}")
+        print(f"[GEMINI DEBUG] Requested {num_parts} prompts, response length: {len(content)} chars")
+        
+        # Check if response was cut off mid-sentence
+        if content and not content[-1] in '.!?':
+            print(f"[GEMINI WARNING] Response may be incomplete (doesn't end with punctuation)")
+            print(f"[GEMINI WARNING] Last 100 chars: ...{content[-100:]}")
+        
+        # Use new parsing logic to extract English prompts only
+        final_prompts = parse_prompts_from_response(content)
+        
+        print(f"[GEMINI DEBUG] Parser extracted {len(final_prompts)} prompts from response")
+        
+        print(f"[FINAL PROMPTS COUNT]: {len(final_prompts)}")
+        
+        if not final_prompts:
+            print("[WARNING] No prompts extracted, check AI response format")
+            return []
+        
+        # Warn if AI returned fewer prompts than requested
+        if len(final_prompts) < num_parts:
+            print(f"[WARNING] ⚠️ AI returned only {len(final_prompts)} prompts, but {num_parts} were requested!")
+            print(f"[WARNING] Possible reasons:")
+            print(f"  1. Response was cut off due to token limit (now increased to 8000)")
+            print(f"  2. Script is too short to split into {num_parts} meaningful parts")
+            print(f"  3. AI did not follow instructions properly")
+            print(f"  4. Parser rejected some prompts (check logs for [REJECT] messages)")
+            print(f"[SOLUTION] Try running again, or reduce num_prompts, or use a longer script")
+        
+        if len(final_prompts) > num_parts:
+            print(f"[LIMIT] AI returned {len(final_prompts)} prompts, limiting to {num_parts}")
+            final_prompts = final_prompts[:num_parts]
+        
+        return final_prompts
+    
+    except Exception as e:
+        raise Exception(f"Gemini API Error: {str(e)}")
 
 # ==================== SETTINGS MANAGER ====================
 class SettingsManager:
@@ -439,7 +693,9 @@ class SettingsManager:
         "output_dir": str(DEFAULT_OUTPUT_DIR),
         "window": {"width": 1600, "height": 900},
         "preset": "balanced",
-        "script_parts": 5
+        "script_parts": 5,
+        "prompt_provider": "Groq",
+        "provider_model": "llama-3.3-70b-versatile"
     }
     
     def __init__(self, path: Path):
@@ -531,106 +787,56 @@ def ai_fix_prompt(client: genai.Client, raw_prompt: str) -> str:
     text = getattr(resp, "text", None) or ""
     return text.strip() or raw_prompt
 
-def convert_image_prompt_to_video(client: genai.Client, image_prompt: str) -> str:
-    """
-    Convert image generation prompt to video generation prompt using Gemini AI.
-    
-    Args:
-        client: Gemini AI client
-        image_prompt: Original image generation prompt
-    
-    Returns:
-        Video-optimized prompt
-    """
-    system_hint = """You are an expert at converting image generation prompts to video generation prompts.
-
-Your task:
-- Take an image prompt and convert it to a VIDEO prompt
-- Add MOTION, CAMERA MOVEMENT, and DYNAMIC ELEMENTS
-- Keep the VISUAL DETAILS from the original prompt
-- Make it CINEMATIC and engaging for video
-- Output ONLY the video prompt, no explanations
-
-Example conversions:
-
-Image: "A serene mountain landscape with snow-capped peaks, blue sky, photorealistic"
-Video: "Smooth aerial drone shot flying over serene mountain landscape with snow-capped peaks against blue sky, camera slowly panning right, gentle wind moving clouds, cinematic 4K"
-
-Image: "Portrait of a woman with long blonde hair, elegant dress, studio lighting"
-Video: "Cinematic portrait shot of woman with long blonde hair in elegant dress, slow push-in camera movement, hair gently flowing, soft studio lighting with subtle shadows shifting, 4K photorealistic"
-
-Image: "A golden retriever sitting in a park"
-Video: "Medium shot of golden retriever sitting alertly in grassy park, dog turns head slightly, tail wagging gently, camera slowly dollying forward, natural daylight, cinematic depth of field"
-
-Rules:
-1. Always add camera movement (pan, tilt, dolly, zoom, aerial, etc.)
-2. Add natural motion to subjects (wind, breathing, subtle movements)
-3. Keep all visual details from original prompt
-4. Make it cinematic and professional
-5. Output ONLY the video prompt"""
-
+def convert_text_prompt_to_video_groq(groq_api_key: str, image_prompt: str) -> str:
+    """Convert image prompt to video prompt using Groq API (text-only, no image analysis)"""
     try:
-        resp = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=[{"role": "user", "parts": [{"text": system_hint}, {"text": f"Image Prompt: {image_prompt}\n\nVideo Prompt:"}]}],
-            config=GenerateContentConfig(response_modalities=[Modality.TEXT])
-        )
-        video_prompt = getattr(resp, "text", None) or ""
-        video_prompt = video_prompt.strip()
-        
-        # Remove any explanatory text if AI added it
-        if "Video:" in video_prompt or "Video Prompt:" in video_prompt:
-            video_prompt = video_prompt.split("Video:")[-1].split("Video Prompt:")[-1].strip()
-        
-        return video_prompt if video_prompt else image_prompt
-    except Exception as e:
-        print(f"[CONVERT PROMPT] Error: {e}")
-        import traceback
-        traceback.print_exc()
-        # Fallback: return original prompt if conversion fails
-        return image_prompt
-
-def describe_image_for_video(client: genai.Client, image_path: str) -> str:
-    """Use Gemini Vision to describe image and create video prompt"""
-    try:
-        # Read image
-        with open(image_path, 'rb') as f:
-            image_data = f.read()
-        
-        image_base64 = base64.b64encode(image_data).decode('utf-8')
-        
-        system_hint = (
-            "You are an expert at creating video generation prompts. "
-            "Describe this image in detail for video generation. "
-            "Focus on: main subject, setting, mood, lighting, camera angle. "
-            "Write a cinematic prompt (1-2 sentences) that describes what motion/animation should happen. "
-            "Reply with the video prompt only, no extra text."
+        system_prompt = (
+            "You are an expert at converting image generation prompts to video generation prompts. "
+            "Convert the following image prompt into a video prompt by adding motion, camera movement, and cinematic details. "
+            "Keep the main subject and scene, but describe how it moves or changes over time. "
+            "Reply with ONLY the video prompt, no extra text or explanation."
         )
         
-        resp = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=[
-                {
-                    "role": "user", 
-                    "parts": [
-                        {"text": system_hint},
-                        {
-                            "inline_data": {
-                                "mime_type": "image/jpeg",
-                                "data": image_base64
-                            }
-                        }
-                    ]
-                }
+        user_message = f"Image prompt: {image_prompt}\n\nConvert this to a video prompt:"
+        
+        # Call Groq API
+        headers = {
+            "Authorization": f"Bearer {groq_api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "llama-3.3-70b-versatile",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
             ],
-            config=GenerateContentConfig(response_modalities=[Modality.TEXT])
+            "temperature": 0.7,
+            "max_tokens": 500
+        }
+        
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=30
         )
         
-        text = getattr(resp, "text", None) or ""
-        return text.strip()
+        if response.status_code == 200:
+            data = response.json()
+            video_prompt = data["choices"][0]["message"]["content"].strip()
+            
+            # If conversion successful and long enough, return it
+            if video_prompt and len(video_prompt) > 20:
+                return video_prompt
+        
+        # Fallback: add basic motion to original prompt
+        return f"{image_prompt}, cinematic camera movement, smooth motion"
+        
     except Exception as e:
-        print(f"Error describing image: {e}")
-        return "A cinematic scene"
+        print(f"Error converting prompt with Groq: {e}")
+        # Fallback: add basic motion to original prompt
+        return f"{image_prompt}, cinematic camera movement, smooth motion"
 
 def escalate_model_quality_fallback(model_id: str) -> str:
     if model_id == IMAGEN4_ULTRA:
@@ -959,7 +1165,7 @@ class ScriptImportDialog(QDialog):
         self.resize(900, 700)
         
         self.groq_keys = groq_keys or []
-        self.custom_system_prompt = custom_system_prompt  # System prompt từ Project
+        self.custom_system_prompt = custom_system_prompt
         self.result_prompts = []
         
         layout = QVBoxLayout(self)
@@ -1131,7 +1337,6 @@ class ScriptImportDialog(QDialog):
             try:
                 # Use first Groq key
                 groq_key = self.groq_keys[0]
-                # Pass custom system prompt from Project
                 prompts = analyze_script_with_groq(script, num_parts, groq_key, self.custom_system_prompt)
                 
                 # Success
@@ -1835,14 +2040,108 @@ class ImageGeneratorTab(QWidget):
         super().__init__(parent)
         
         self.api_client = api_client
-        self.project_manager = project_manager  # Access to ProjectManager for script_template
-        self.main_window = main_window  # Direct reference to GenVideoPro MainWindow
+        self.project_manager = project_manager  # For loading custom system prompt
+        self.main_window = main_window  # For "Send to Video" feature
         self.settings = SettingsManager(SETTINGS_PATH)
         
         # Theme - Match Voice App Style
         self.setStyleSheet(f"""
             QWidget {{
                 background-color: {Theme.BG_PRIMARY};
+            }}
+            QLabel {{
+                color: {Theme.TEXT_PRIMARY};
+            }}
+            QTextEdit, QLineEdit {{
+                background-color: white;
+                color: {Theme.TEXT_PRIMARY};
+                border: 2px solid #cbd5e1;
+                border-radius: 5px;
+                padding: 6px 10px;
+                font-size: 9pt;
+            }}
+            QTextEdit:focus, QLineEdit:focus {{
+                border-color: {Theme.PRIMARY};
+            }}
+            QComboBox {{
+                background-color: white;
+                color: {Theme.TEXT_PRIMARY};
+                border: 2px solid #cbd5e1;
+                border-radius: 5px;
+                padding: 6px 10px;
+                font-size: 9pt;
+                min-height: 26px;
+            }}
+            QComboBox:hover {{
+                border-color: {Theme.PRIMARY};
+            }}
+            QComboBox:focus {{
+                border-color: {Theme.PRIMARY};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                padding-right: 10px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: white;
+                color: {Theme.TEXT_PRIMARY};
+                selection-background-color: {Theme.PRIMARY};
+                selection-color: white;
+                border: 2px solid #cbd5e1;
+            }}
+            QSpinBox {{
+                background-color: white;
+                color: {Theme.TEXT_PRIMARY};
+                border: 2px solid #cbd5e1;
+                border-radius: 5px;
+                padding: 6px 10px;
+                min-height: 26px;
+                font-size: 9pt;
+            }}
+            QSpinBox:hover {{
+                border-color: {Theme.PRIMARY};
+            }}
+            QSpinBox:focus {{
+                border-color: {Theme.PRIMARY};
+            }}
+            QCheckBox {{
+                color: {Theme.TEXT_PRIMARY};
+                spacing: 8px;
+                font-size: 9pt;
+            }}
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border-radius: 4px;
+                border: 2px solid #94a3b8;
+                background-color: white;
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {Theme.PRIMARY};
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: {Theme.PRIMARY};
+                border-color: {Theme.PRIMARY};
+                image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTIiIGhlaWdodD0iMTIiIHZpZXdCb3g9IjAgMCAxMiAxMiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KICA8cGF0aCBkPSJNMTAgM0w0LjUgOC41TDIgNiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPC9zdmc+);
+            }}
+            QCheckBox::indicator:checked:hover {{
+                background-color: {Theme.PRIMARY_HOVER};
+            }}
+            QGroupBox {{
+                background-color: white;
+                border: 2px solid {Theme.BORDER};
+                border-radius: 8px;
+                margin-top: 12px;
+                font-weight: 600;
+                font-size: 10pt;
+                padding-top: 12px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                left: 12px;
+                top: 4px;
+                color: {Theme.TEXT_PRIMARY};
             }}
         """)
         
@@ -1853,7 +2152,7 @@ class ImageGeneratorTab(QWidget):
         self.rotator = KeyRotator([DEFAULT_KEY])
         
         self.output_dir = Path(self.settings.get("output_dir", str(DEFAULT_OUTPUT_DIR)))
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)  # Ensure default output dir exists
         
         self.worker = None
         
@@ -1956,87 +2255,6 @@ class ImageGeneratorTab(QWidget):
         self.model_cb.setMinimumWidth(360)
         basic_layout.addWidget(self.model_cb)
         
-        # Prompt AI Provider & Model in a grid layout
-        ai_grid = QGridLayout()
-        ai_grid.setSpacing(12)
-        ai_grid.setHorizontalSpacing(20)
-        ai_grid.setVerticalSpacing(8)
-        
-        # Prompt AI Provider
-        provider_label = QLabel("Prompt AI Provider")
-        provider_label.setStyleSheet(f"color: {Theme.TEXT_PRIMARY}; font-weight: 600;")
-        ai_grid.addWidget(provider_label, 0, 0)
-        
-        self.provider_cb = QComboBox()
-        self.provider_cb.addItems(["Groq", "ChatGPT", "Gemini"])
-        self.provider_cb.setMinimumWidth(250)
-        self.provider_cb.setStyleSheet(f"""
-            QComboBox {{
-                background: {Theme.BG_SECONDARY};
-                color: {Theme.TEXT_PRIMARY};
-                border: 1px solid {Theme.BORDER};
-                border-radius: 8px;
-                padding: 8px 12px;
-                font-size: 14px;
-            }}
-            QComboBox::drop-down {{
-                border: none;
-                padding-right: 8px;
-            }}
-            QComboBox:hover {{
-                background: {Theme.BG_TERTIARY};
-                border-color: {Theme.PRIMARY};
-            }}
-            QComboBox QAbstractItemView {{
-                background: {Theme.BG_SECONDARY};
-                color: {Theme.TEXT_PRIMARY};
-                selection-background-color: {Theme.PRIMARY};
-                border: 1px solid {Theme.BORDER};
-                border-radius: 4px;
-            }}
-        """)
-        self.provider_cb.currentTextChanged.connect(self.on_prompt_provider_change)
-        ai_grid.addWidget(self.provider_cb, 1, 0)
-        
-        # Prompt Model (depends on provider)
-        model_label2 = QLabel("Prompt Model")
-        model_label2.setStyleSheet(f"color: {Theme.TEXT_PRIMARY}; font-weight: 600;")
-        ai_grid.addWidget(model_label2, 0, 1)
-        
-        self.provider_model_cb = QComboBox()
-        self.provider_model_cb.setMinimumWidth(250)
-        self.provider_model_cb.setStyleSheet(f"""
-            QComboBox {{
-                background: {Theme.BG_SECONDARY};
-                color: {Theme.TEXT_PRIMARY};
-                border: 1px solid {Theme.BORDER};
-                border-radius: 8px;
-                padding: 8px 12px;
-                font-size: 14px;
-            }}
-            QComboBox::drop-down {{
-                border: none;
-                padding-right: 8px;
-            }}
-            QComboBox:hover {{
-                background: {Theme.BG_TERTIARY};
-                border-color: {Theme.PRIMARY};
-            }}
-            QComboBox QAbstractItemView {{
-                background: {Theme.BG_SECONDARY};
-                color: {Theme.TEXT_PRIMARY};
-                selection-background-color: {Theme.PRIMARY};
-                border: 1px solid {Theme.BORDER};
-                border-radius: 4px;
-            }}
-        """)
-        ai_grid.addWidget(self.provider_model_cb, 1, 1)
-        
-        # Initialize model options
-        self.on_prompt_provider_change(self.provider_cb.currentText())
-        
-        basic_layout.addLayout(ai_grid)
-        
         grid = QGridLayout()
         grid.setSpacing(12)
         grid.setVerticalSpacing(8)
@@ -2066,6 +2284,27 @@ class ImageGeneratorTab(QWidget):
         grid.addWidget(self.cc_cb, 3, 1)
         
         basic_layout.addLayout(grid)
+        
+        # AI Provider & Model for Script Analysis
+        basic_layout.addWidget(self._create_section("🤖 Script Analysis AI"))
+        
+        basic_layout.addWidget(self._create_label("AI Provider"))
+        self.toolbar_provider_cb = QComboBox()
+        self.toolbar_provider_cb.addItems(["Groq", "ChatGPT", "Gemini"])
+        self.toolbar_provider_cb.setMinimumWidth(360)
+        self.toolbar_provider_cb.setToolTip("AI provider for analyzing script and generating image prompts")
+        self.toolbar_provider_cb.currentTextChanged.connect(self._on_toolbar_provider_changed)
+        basic_layout.addWidget(self.toolbar_provider_cb)
+        
+        basic_layout.addWidget(self._create_label("AI Model"))
+        self.toolbar_model_cb = QComboBox()
+        self.toolbar_model_cb.setMinimumWidth(360)
+        self.toolbar_model_cb.setToolTip("Select AI model for generating prompts from script")
+        basic_layout.addWidget(self.toolbar_model_cb)
+        
+        # Initialize model options
+        self._on_toolbar_provider_changed(self.toolbar_provider_cb.currentText())
+        
         basic_layout.addStretch()
         
         settings_tabs.addTab(basic_tab, "Basic")
@@ -2114,8 +2353,8 @@ class ImageGeneratorTab(QWidget):
         """)
         advanced_layout.addWidget(self.clear_before_cb)
         
-        # REMOVED: Auto describe checkbox - không dùng nữa
-        # self.auto_describe_cb = QCheckBox("🤖 Auto describe when sending to Video")
+        # Note: Auto describe is now ALWAYS enabled when sending to video
+        # (Removed checkbox - conversion is automatic)
         
         advanced_layout.addStretch()
         
@@ -2331,9 +2570,6 @@ class ImageGeneratorTab(QWidget):
         self.output_edit.setText(s.get("output_dir", str(DEFAULT_OUTPUT_DIR)))
         self.model_cb.setCurrentText(s.get("model", IMAGEN4_ULTRA))
         self.on_model_change()
-        self.provider_cb.setCurrentText(s.get("prompt_ai_provider", "Groq"))
-        self.on_prompt_provider_change(self.provider_cb.currentText())
-        self.provider_model_cb.setCurrentText(s.get("prompt_ai_model", "llama-3.3-70b-versatile"))
         self.ar_cb.setCurrentText(s.get("aspect_ratio", "16:9"))
         self.size_cb.setCurrentText(s.get("image_size", "2K"))
         self.count_cb.setCurrentText(str(s.get("images", 4)))
@@ -2342,14 +2578,23 @@ class ImageGeneratorTab(QWidget):
         self.script_parts_spin.setValue(int(s.get("script_parts", 5)))
         self.auto_retry_cb.setChecked(bool(s.get("auto_retry", True)))
         self.clear_before_cb.setChecked(bool(s.get("clear_output_before_run", False)))
-        # REMOVED: auto_describe_cb - không dùng nữa
+        # Auto describe is now always enabled (checkbox removed)
         self.person_cb.setCurrentText(s.get("person_generation", "allow_adult"))
+        
+        # Load AI provider/model settings for toolbar
+        provider = s.get("prompt_provider", "Groq")
+        model = s.get("provider_model", "llama-3.3-70b-versatile")
+        
+        if hasattr(self, 'toolbar_provider_cb'):
+            self.toolbar_provider_cb.setCurrentText(provider)
+            # Trigger provider change to populate models
+            self._on_toolbar_provider_changed(provider)
+        if hasattr(self, 'toolbar_model_cb'):
+            self.toolbar_model_cb.setCurrentText(model)
     
     def save_settings(self):
         self.settings.set("output_dir", self.output_edit.text().strip())
         self.settings.set("model", self.model_cb.currentText())
-        self.settings.set("prompt_ai_provider", self.provider_cb.currentText())
-        self.settings.set("prompt_ai_model", self.provider_model_cb.currentText())
         self.settings.set("aspect_ratio", self.ar_cb.currentText())
         self.settings.set("image_size", self.size_cb.currentText())
         self.settings.set("images", int(self.count_cb.currentText()))
@@ -2358,8 +2603,14 @@ class ImageGeneratorTab(QWidget):
         self.settings.set("script_parts", int(self.script_parts_spin.value()))
         self.settings.set("auto_retry", bool(self.auto_retry_cb.isChecked()))
         self.settings.set("clear_output_before_run", bool(self.clear_before_cb.isChecked()))
-        # REMOVED: auto_describe_for_video - không dùng nữa
+        # Auto describe is now always enabled (checkbox removed)
         self.settings.set("person_generation", self.person_cb.currentText())
+        
+        # Save AI provider/model from toolbar
+        if hasattr(self, 'toolbar_provider_cb'):
+            self.settings.set("prompt_provider", self.toolbar_provider_cb.currentText())
+        if hasattr(self, 'toolbar_model_cb'):
+            self.settings.set("provider_model", self.toolbar_model_cb.currentText())
         
         try:
             w = self.width()
@@ -2383,11 +2634,24 @@ class ImageGeneratorTab(QWidget):
         enable_size = (m in (IMAGEN4_STD, IMAGEN4_ULTRA))
         self.size_cb.setEnabled(enable_size)
     
+    def _on_toolbar_provider_changed(self, provider: str):
+        """Update toolbar model options based on provider."""
+        items = []
+        if provider == "ChatGPT":
+            items = ["o3", "gpt-5"]
+        elif provider == "Gemini":
+            items = ["gemini-2.5-pro", "gemini-2.5-flash"]
+        else:  # Groq default
+            items = ["llama-3.3-70b-versatile", "llama-3.1-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"]
+        
+        self.toolbar_model_cb.clear()
+        self.toolbar_model_cb.addItems(items)
+    
     def on_browse_output(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Output Folder", str(self.output_dir))
         if folder:
             self.output_dir = Path(folder)
-            self.output_dir.mkdir(exist_ok=True)
+            self.output_dir.mkdir(parents=True, exist_ok=True)  # Create parent directories if needed
             self.output_edit.setText(str(self.output_dir))
             self.set_status(f"📁 Output folder updated")
     
@@ -2486,20 +2750,103 @@ class ImageGeneratorTab(QWidget):
             print(f"Error loading Groq keys: {e}")
         return []
     
+    def _load_openai_keys(self) -> List[str]:
+        """Load OpenAI API keys from server or settings"""
+        try:
+            # Try server first
+            if self.api_client and self.api_client.is_authenticated():
+                try:
+                    keys_data = self.api_client.get_openai_keys()
+                    if keys_data:
+                        return [k.get('api_key', '').strip() for k in keys_data if k.get('api_key', '').strip()]
+                except:
+                    pass
+            
+            # Fallback to settings file
+            genvideo_settings_path = Path(__file__).parent / "vgp_settings.json"
+            if genvideo_settings_path.exists():
+                with open(genvideo_settings_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    keys = data.get("openai_keys", [])
+                    return [k.strip() for k in keys if k.strip()]
+        except Exception as e:
+            print(f"Error loading OpenAI keys: {e}")
+        return []
+    
+    def _load_gemini_keys(self) -> List[str]:
+        """Load Gemini API keys from server or settings"""
+        try:
+            # Try server first
+            if self.api_client and self.api_client.is_authenticated():
+                try:
+                    keys_data = self.api_client.get_gemini_keys()
+                    if keys_data:
+                        return [k.get('api_key', '').strip() for k in keys_data if k.get('api_key', '').strip()]
+                except:
+                    pass
+            
+            # Fallback to settings file
+            genvideo_settings_path = Path(__file__).parent / "vgp_settings.json"
+            if genvideo_settings_path.exists():
+                with open(genvideo_settings_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    keys = data.get("gemini_keys", [])
+                    return [k.strip() for k in keys if k.strip()]
+        except Exception as e:
+            print(f"Error loading Gemini keys: {e}")
+        return []
+    
     def on_import_script(self):
-        """Import script from TXT file and auto-generate prompts with Groq AI"""
-        # Load Groq keys from GenVideoPro settings
-        groq_keys = self._load_groq_keys_from_genvideo_settings()
+        """Import script from TXT file and auto-generate prompts with AI (Groq/ChatGPT/Gemini)"""
+        # Get provider and model from toolbar (CHUNG cho tất cả projects)
+        provider = "Groq"  # Default
+        model = "llama-3.3-70b-versatile"  # Default
         
-        if not groq_keys:
-            QMessageBox.critical(
-                self, 
-                "Groq API Key Missing",
-                "No Groq API keys found!\n\n"
-                "Please add Groq API keys in GenVideoPro Settings tab.\n"
-                "Get your key at: https://console.groq.com/keys"
-            )
-            return
+        if hasattr(self, 'toolbar_provider_cb'):
+            provider = self.toolbar_provider_cb.currentText() or "Groq"
+        if hasattr(self, 'toolbar_model_cb'):
+            model = self.toolbar_model_cb.currentText() or "llama-3.3-70b-versatile"
+        
+        print(f"[IMPORT SCRIPT] Using provider/model from TOOLBAR: {provider} / {model}")
+        
+        # Load keys based on provider
+        api_key = None
+        if provider == "ChatGPT":
+            openai_keys = self._load_openai_keys()
+            if not openai_keys:
+                QMessageBox.critical(
+                    self, 
+                    "OpenAI API Key Missing",
+                    "No OpenAI API keys found!\n\n"
+                    "Please add OpenAI API keys in Settings tab or Admin Panel.\n"
+                    "Get your key at: https://platform.openai.com/api-keys"
+                )
+                return
+            api_key = openai_keys[0]
+        elif provider == "Gemini":
+            gemini_keys = self._load_gemini_keys()
+            if not gemini_keys:
+                QMessageBox.critical(
+                    self, 
+                    "Gemini API Key Missing",
+                    "No Gemini API keys found!\n\n"
+                    "Please add Gemini API keys in Settings tab or Admin Panel.\n"
+                    "Get your key at: https://aistudio.google.com/app/apikey"
+                )
+                return
+            api_key = gemini_keys[0]
+        else:  # Groq (default)
+            groq_keys = self._load_groq_keys_from_genvideo_settings()
+            if not groq_keys:
+                QMessageBox.critical(
+                    self, 
+                    "Groq API Key Missing",
+                    "No Groq API keys found!\n\n"
+                    "Please add Groq API keys in GenVideoPro Settings tab.\n"
+                    "Get your key at: https://console.groq.com/keys"
+                )
+                return
+            api_key = groq_keys[0]
         
         # Open file dialog to select script TXT file
         file_path, _ = QFileDialog.getOpenFileName(
@@ -2511,46 +2858,6 @@ class ImageGeneratorTab(QWidget):
         
         if not file_path:
             return
-        
-        # =============================================
-        # Create project output folders next to script
-        # Root: <script_dir>/<script_name>/
-        #   - image/
-        #   - video/
-        #   - voice/
-        # =============================================
-        try:
-            sp = Path(file_path)
-            script_dir = sp.parent
-            script_name = sp.stem  # e.g., LD280
-            project_root = script_dir / script_name
-            image_dir = project_root / "image"
-            video_dir = project_root / "video"
-            voice_dir = project_root / "voice"
-
-            # Create all folders
-            for d in (project_root, image_dir, video_dir, voice_dir):
-                d.mkdir(parents=True, exist_ok=True)
-
-            # Point Image Generator output to image folder
-            self.output_dir = image_dir
-            self.settings.set("output_dir", str(image_dir))
-
-            print(f"[SCRIPT IMPORT] Project root: {project_root}")
-            print(f"[SCRIPT IMPORT] Image folder:  {image_dir}")
-            print(f"[SCRIPT IMPORT] Video folder:  {video_dir}")
-            print(f"[SCRIPT IMPORT] Voice folder:  {voice_dir}")
-
-            # If main window is available, set Image-to-Video out dir to video folder
-            if self.main_window and hasattr(self.main_window, "edit_outdir"):
-                self.main_window.edit_outdir.setText(str(video_dir))
-                # Persist immediately
-                if hasattr(self.main_window, "save_settings"):
-                    self.main_window.save_settings()
-                print("[SCRIPT IMPORT] Set Image-to-Video out_dir in MainWindow")
-        except Exception as e:
-            print(f"[SCRIPT IMPORT] ⚠️ Failed to prepare project folders: {e}")
-            # Do not abort - continue with defaults
         
         # Read script from file
         try:
@@ -2564,66 +2871,88 @@ class ImageGeneratorTab(QWidget):
             QMessageBox.warning(self, "Empty File", "The script file is empty!")
             return
         
+        # Create project folder structure based on script file name
+        script_path = Path(file_path)
+        script_stem = script_path.stem  # e.g., "LD235" from "LD235.txt"
+        script_parent = script_path.parent  # Parent directory of the script
+        
+        # Project folder: same level as script, named after script
+        project_folder = script_parent / script_stem
+        image_folder = project_folder / "image"
+        video_folder = project_folder / "video"
+        voice_folder = project_folder / "voice"
+        
+        # Create folders
+        try:
+            image_folder.mkdir(parents=True, exist_ok=True)
+            video_folder.mkdir(parents=True, exist_ok=True)
+            voice_folder.mkdir(parents=True, exist_ok=True)
+            
+            print(f"[IMAGE TAB] Created folders:")
+            print(f"  - Project: {project_folder}")
+            print(f"    ├─ Image: {image_folder}")
+            print(f"    ├─ Video: {video_folder}")
+            print(f"    └─ Voice: {voice_folder}")
+            
+            # Set output_dir to image folder
+            self.output_dir = image_folder
+            self.output_edit.setText(str(self.output_dir))
+            
+            # Save to settings
+            self.settings.set("output_dir", str(self.output_dir))
+            
+        except Exception as e:
+            QMessageBox.warning(
+                self, 
+                "Folder Creation Warning", 
+                f"Could not create project folders:\n{e}\n\nUsing default output folder."
+            )
+        
         # Get number of parts from settings
         num_parts = int(self.script_parts_spin.value())
         
         # Show processing message
-        self.set_status(f"🤖 Analyzing script with Groq AI (splitting into {num_parts} parts)...")
+        self.set_status(f"🤖 Analyzing script with {provider} ({model}) (splitting into {num_parts} parts)...")
+        
+        # Store provider/model/api_key for worker thread
+        worker_provider = provider
+        worker_model = model
+        worker_api_key = api_key
         
         # Process in thread to not block UI
         def worker():
             try:
                 print(f"[WORKER] Starting analysis with {num_parts} parts")
+                print(f"[WORKER] Provider: {worker_provider}, Model: {worker_model}")
                 print(f"[WORKER] Script length: {len(script)} chars")
                 print(f"[WORKER] Script preview: {script[:200]}...")
+                print(f"[WORKER] Using API key: {worker_api_key[:20]}...")
                 
                 # Get custom system prompt from current project (if available)
                 custom_prompt = ""
                 if self.project_manager and self.project_manager.current_project:
                     custom_prompt = self.project_manager.current_project.script_template or ""
                     if custom_prompt:
-                        print(f"[WORKER] Using custom script_template from project: {self.project_manager.current_project.name}")
-                
-                provider = self.provider_cb.currentText()
-                print(f"[WORKER] Provider: {provider}")
-                
-                if provider == "ChatGPT" and self.api_client and self.api_client.is_authenticated():
-                    # Load OpenAI keys from server
-                    try:
-                        openai_keys = self.api_client.get_openai_keys()
-                        if not openai_keys:
-                            raise Exception("No OpenAI keys available on server")
-                        openai_key = (openai_keys[0].get('api_key') or '').strip()
-                        model_name = self.provider_model_cb.currentText() or "o3"
-                        print(f"[WORKER] Using ChatGPT ({model_name}) with key: {openai_key[:12]}...{openai_key[-6:]}")
-                        prompts = analyze_script_with_openai(script, num_parts, openai_key, custom_prompt, model=model_name)
-                    except Exception as e:
-                        print(f"[WORKER] ChatGPT path failed: {e}")
-                        # Fallback to Groq if available
-                        groq_key = groq_keys[0]
-                        prompts = analyze_script_with_groq(script, num_parts, groq_key, custom_prompt)
-                elif provider == "Gemini":
-                    # Use current Gemini key (from rotator)
-                    gemini_key = None
-                    try:
-                        gemini_key = self.rotator.current()
-                    except Exception:
-                        pass
-                    if not gemini_key:
-                        print("[WORKER] No Gemini key loaded - cannot use Gemini provider, fallback to Groq")
-                        groq_key = groq_keys[0]
-                        prompts = analyze_script_with_groq(script, num_parts, groq_key, custom_prompt)
+                        print(f"[WORKER] Using custom prompt from project: {self.project_manager.current_project.name}")
                     else:
-                        model_name = self.provider_model_cb.currentText() or "gemini-2.5-pro"
-                        print(f"[WORKER] Using Gemini ({model_name})")
-                        prompts = analyze_script_with_gemini_text(script, num_parts, gemini_key, custom_prompt, model=model_name)
+                        print(f"[WORKER] No custom prompt in project, using default")
                 else:
-                    # Default Groq path
-                    groq_key = groq_keys[0]
-                    print(f"[WORKER] Using Groq (llama-3.3-70b) with key: {groq_key[:20]}...")
-                    prompts = analyze_script_with_groq(script, num_parts, groq_key, custom_prompt)
+                    print(f"[WORKER] No project selected, using default prompt")
                 
-                print(f"[WORKER] Got {len(prompts)} prompts from AI")
+                # Call appropriate AI function based on provider
+                prompts = None
+                if worker_provider == "ChatGPT":
+                    prompts = analyze_script_with_openai(script, num_parts, worker_api_key, worker_model, custom_prompt)
+                    print(f"[WORKER] Got {len(prompts)} prompts from ChatGPT ({worker_model})")
+                elif worker_provider == "Gemini":
+                    prompts = analyze_script_with_gemini(script, num_parts, worker_api_key, worker_model, custom_prompt)
+                    print(f"[WORKER] Got {len(prompts)} prompts from Gemini ({worker_model})")
+                else:  # Groq (default)
+                    prompts = analyze_script_with_groq(script, num_parts, worker_api_key, custom_prompt)
+                    print(f"[WORKER] Got {len(prompts)} prompts from Groq")
+                
+                if not prompts:
+                    raise Exception(f"No prompts generated from {worker_provider}")
                 
                 # Success - emit signal to update UI safely from main thread
                 self.script_analysis_success.emit(prompts)
@@ -2756,120 +3085,155 @@ class ImageGeneratorTab(QWidget):
         self.generate_rows(failed_rows)
     
     def on_send_to_image2video(self):
-        """Chuyển TẤT CẢ ảnh đã generate thành công sang Image to Video tab"""
+        """Chuyển tất cả ảnh đã generate thành công sang Image to Video tab"""
+        print("\n" + "="*80)
+        print("[SEND TO VIDEO] Button clicked - Starting process...")
+        print("="*80)
+        
         # Collect all successfully generated images
         successful_images = []
         
-        print(f"[SEND TO VIDEO] Checking {len(self.rows)} rows...")
-        
+        print(f"[SEND TO VIDEO] Total rows to check: {len(self.rows)}")
         for idx, row in enumerate(self.rows):
             # Check if row has completed (has saved images)
             if hasattr(row, 'saved_paths') and row.saved_paths:
-                # Get prompt from text editor
-                prompt = row.txt.toPlainText().strip() if hasattr(row, 'txt') else ""
-                if not prompt:
-                    prompt = f"Image {idx + 1}"  # Fallback prompt
-                
+                prompt = row.get_prompt()
                 # Get the first image as start image
                 first_image = str(row.saved_paths[0])
-                
-                # Verify image exists
-                if os.path.exists(first_image):
-                    successful_images.append({
-                        'prompt': prompt,
-                        'image': first_image
-                    })
-                    print(f"[SEND TO VIDEO] ✅ Row {idx + 1}: {first_image}")
-                else:
-                    print(f"[SEND TO VIDEO] ⚠️ Row {idx + 1}: Image not found: {first_image}")
+                successful_images.append({
+                    'prompt': prompt,
+                    'image': first_image
+                })
+                print(f"[SEND TO VIDEO] Row {idx}: ✅ Has {len(row.saved_paths)} images")
+                print(f"[SEND TO VIDEO]   - Prompt: {prompt[:50]}...")
+                print(f"[SEND TO VIDEO]   - Image: {first_image}")
             else:
-                status = "unknown"
-                if hasattr(row, 'status_badge') and row.status_badge:
-                    status = row.status_badge.text()
-                print(f"[SEND TO VIDEO] ⚠️ Row {idx + 1}: No saved images (status: {status})")
+                print(f"[SEND TO VIDEO] Row {idx}: ❌ No saved images")
         
         print(f"[SEND TO VIDEO] Total successful images: {len(successful_images)}")
         
         if not successful_images:
+            print("[SEND TO VIDEO] No images to send - showing warning")
             QMessageBox.information(
                 self, 
                 "No Images", 
                 "No successfully generated images to send.\n\n"
-                "Please generate some images first.\n\n"
-                f"Checked {len(self.rows)} rows, none have completed images."
+                "Please generate some images first."
             )
             return
         
-        # REMOVED: Auto-describe feature - không dùng nữa
-        # Gọi trực tiếp _finish_send_to_video
-        print("[SEND TO VIDEO] Calling _finish_send_to_video directly")
-        self._finish_send_to_video(successful_images)
+        # Auto describe images - ALWAYS enabled (no checkbox)
+        self.set_status("🤖 Converting image prompts to video prompts...")
+        print(f"[SEND TO VIDEO] Starting prompt conversion for {len(successful_images)} images...")
+        
+        def describe_worker():
+            print("[WORKER] Starting prompt conversion thread (using Groq)...")
+            
+            # Load Groq API key from settings
+            try:
+                from tool_api_client import ToolAPIClient
+                api_client = ToolAPIClient()
+                groq_keys = api_client.get_groq_keys()
+                if not groq_keys:
+                    print("[WORKER] ⚠️ No Groq keys available, using fallback")
+                    groq_api_key = None
+                else:
+                    groq_api_key = groq_keys[0]
+                    print(f"[WORKER] Using Groq key: {groq_api_key[:20]}...")
+            except Exception as e:
+                print(f"[WORKER] Error loading Groq key: {e}")
+                groq_api_key = None
+            
+            for i, img_data in enumerate(successful_images):
+                try:
+                    print(f"[WORKER] Converting prompt {i+1}/{len(successful_images)}...")
+                    print(f"[WORKER]   Original: {img_data['prompt'][:50]}...")
+                    
+                    if groq_api_key:
+                        # Convert text prompt using Groq (not analyzing image)
+                        video_prompt = convert_text_prompt_to_video_groq(groq_api_key, img_data['prompt'])
+                        
+                        if video_prompt:
+                            img_data['prompt'] = video_prompt
+                            print(f"[WORKER]   ✅ Converted: {video_prompt[:50]}...")
+                        else:
+                            print(f"[WORKER]   ⚠️ Keeping original prompt")
+                    else:
+                        # No API key, add basic motion
+                        img_data['prompt'] = f"{img_data['prompt']}, cinematic camera movement, smooth motion"
+                        print(f"[WORKER]   ⚠️ No Groq key, added basic motion")
+                    
+                    self.set_status(f"🤖 Converted {i+1}/{len(successful_images)} prompts...")
+                except Exception as e:
+                    print(f"[WORKER]   ❌ Error converting prompt {i+1}: {e}")
+                    # Keep original prompt if error
+            
+            print("[WORKER] All prompts converted. Calling _finish_send_to_video...")
+            # Continue with sending to video after describing
+            # Store in instance variable and use invokeMethod without arguments
+            self._pending_images = successful_images
+            QMetaObject.invokeMethod(
+                self,
+                "_do_finish_send_to_video_wrapper",
+                Qt.QueuedConnection
+            )
+            print("[WORKER] Queued _do_finish_send_to_video_wrapper on main thread")
+            print("[WORKER] Worker thread finished.")
+        
+        print("[SEND TO VIDEO] Starting worker thread...")
+        threading.Thread(target=describe_worker, daemon=True).start()
+        print("[SEND TO VIDEO] on_send_to_image2video function finished.")
+    
+    @Slot()
+    def _do_finish_send_to_video_wrapper(self):
+        """Slot method called from worker thread via QMetaObject.invokeMethod"""
+        print("\n" + "="*80)
+        print(f"[FINISH SLOT] _do_finish_send_to_video_wrapper called")
+        print("="*80)
+        
+        if hasattr(self, '_pending_images') and self._pending_images:
+            print(f"[FINISH SLOT] Processing {len(self._pending_images)} pending images")
+            self._finish_send_to_video(self._pending_images)
+            self._pending_images = None
+        else:
+            print("[FINISH SLOT] ⚠️ No pending images found")
     
     def _finish_send_to_video(self, successful_images):
-        """Send all successful images to Image to Video tab"""
-        print(f"[FINISH SEND] _finish_send_to_video called with {len(successful_images)} images")
+        print(f"[FINISH] _finish_send_to_video called with {len(successful_images)} images")
         
-        # Use direct reference to MainWindow if available, otherwise try to find parent
-        main_window = self.main_window
-        if not main_window:
-            # Fallback: Try to find parent
+        # Get main window (GenVideoPro MainWindow)
+        parent = self.main_window
+        print(f"[FINISH] self.main_window = {parent}")
+        
+        # Fallback: try to find parent if main_window not set
+        if not parent:
             parent = self.parent()
             while parent and not hasattr(parent, 'image_prompts'):
                 parent = parent.parent()
-            main_window = parent
         
-        if not main_window or not hasattr(main_window, 'image_prompts'):
+        if not parent or not hasattr(parent, 'image_prompts'):
             QMessageBox.warning(
                 self,
                 "Error",
                 "Cannot find GenVideoPro main window.\n\n"
                 "This feature only works when Image Generator is embedded in GenVideoPro."
             )
+            print("[SEND TO VIDEO] Error: Cannot find main window with image_prompts attribute")
             return
+        
+        print(f"[SEND TO VIDEO] Found main window: {parent}")
+        print(f"[SEND TO VIDEO] Has tabs: {hasattr(parent, 'tabs')}")
+        print(f"[SEND TO VIDEO] Has image_prompts: {hasattr(parent, 'image_prompts')}")
+        print(f"[SEND TO VIDEO] Has _refresh_image_table: {hasattr(parent, '_refresh_image_table')}")
         
         # Add to Image to Video tab
         try:
-            print(f"[SEND TO VIDEO] Starting to add {len(successful_images)} images to queue...")
-            print(f"[SEND TO VIDEO] MainWindow type: {type(main_window)}")
-            print(f"[SEND TO VIDEO] Has image_prompts: {hasattr(main_window, 'image_prompts')}")
-            if hasattr(main_window, 'image_prompts'):
-                print(f"[SEND TO VIDEO] Current image_prompts count: {len(main_window.image_prompts)}")
-            
-            # Import ImagePromptRow from GenVideoPro
-            # NOTE: Check main_window type to get proper module name
-            ImagePromptRow = None
-            
-            # Try to get ImagePromptRow from main_window's class
-            if main_window:
-                try:
-                    main_window_class = type(main_window)
-                    main_window_module = main_window_class.__module__
-                    print(f"[SEND TO VIDEO] MainWindow module: {main_window_module}")
-                    
-                    # Import from the actual module
-                    import importlib
-                    genvideo_module = importlib.import_module(main_window_module)
-                    if hasattr(genvideo_module, 'ImagePromptRow'):
-                        ImagePromptRow = genvideo_module.ImagePromptRow
-                        print(f"[SEND TO VIDEO] ✅ Imported ImagePromptRow from {main_window_module}")
-                    else:
-                        print(f"[SEND TO VIDEO] ⚠️ Module {main_window_module} has no ImagePromptRow")
-                except Exception as e:
-                    print(f"[SEND TO VIDEO] ⚠️ Error importing from main window module: {e}")
-            
-            # Fallback: Try sys.modules
-            if not ImagePromptRow:
-                import sys
-                for module_name in ['GenVideoPro', '__main__']:
-                    if module_name in sys.modules:
-                        module = sys.modules[module_name]
-                        if hasattr(module, 'ImagePromptRow'):
-                            ImagePromptRow = module.ImagePromptRow
-                            print(f"[SEND TO VIDEO] ✅ Imported ImagePromptRow from {module_name}")
-                            break
-            
-            # Last resort: Create inline class
-            if not ImagePromptRow:
+            # Import dynamically to avoid circular imports
+            import sys
+            if 'GenVideoPro' in sys.modules:
+                from GenVideoPro import ImagePromptRow
+            else:
+                # Create ImagePromptRow inline if not available
                 from dataclasses import dataclass
                 @dataclass
                 class ImagePromptRow:
@@ -2877,166 +3241,55 @@ class ImageGeneratorTab(QWidget):
                     start_image: str
                     status: str = "Pending"
                     video: str = ""
-                print("[SEND TO VIDEO] ⚠️ Created inline ImagePromptRow (fallback)")
-            
-            # Convert image prompts to video prompts using Gemini AI
-            print(f"[SEND TO VIDEO] Converting {len(successful_images)} image prompts to video prompts...")
-            
-            # Get Gemini API key from rotator
-            try:
-                api_key = self.rotator.current() if hasattr(self, 'rotator') and self.rotator else None
-                if api_key:
-                    print(f"[CONVERT PROMPT] Using Gemini API key: {api_key[:20]}...")
-                    client = genai.Client(api_key=api_key)
-                    
-                    for idx, img_data in enumerate(successful_images):
-                        original_prompt = img_data['prompt']
-                        print(f"[CONVERT PROMPT] Converting prompt {idx + 1}/{len(successful_images)}")
-                        print(f"[CONVERT PROMPT]   Original: {original_prompt[:80]}...")
-                        
-                        try:
-                            video_prompt = convert_image_prompt_to_video(client, original_prompt)
-                            img_data['prompt'] = video_prompt
-                            print(f"[CONVERT PROMPT]   Video: {video_prompt[:80]}...")
-                            print(f"[CONVERT PROMPT] ✅ Converted prompt {idx + 1}")
-                        except Exception as e:
-                            print(f"[CONVERT PROMPT] ⚠️ Error converting prompt {idx + 1}: {e}")
-                            # Keep original prompt if conversion fails
-                else:
-                    print("[CONVERT PROMPT] ⚠️ No Gemini API key available, using original prompts")
-            except Exception as e:
-                print(f"[CONVERT PROMPT] ⚠️ Error initializing Gemini client: {e}")
-                import traceback
-                traceback.print_exc()
             
             # Add all images to image_prompts list
-            print(f"[SEND TO VIDEO] Adding {len(successful_images)} images to queue...")
-            added_count = 0
-            for idx, img_data in enumerate(successful_images):
-                print(f"[SEND TO VIDEO] Processing image {idx + 1}/{len(successful_images)}")
-                print(f"[SEND TO VIDEO]   Prompt: {img_data['prompt'][:50]}...")
-                print(f"[SEND TO VIDEO]   Image: {img_data['image']}")
-                
-                # Check if image file exists
-                if not os.path.exists(img_data['image']):
-                    print(f"[SEND TO VIDEO] ⚠️ Image not found: {img_data['image']}")
-                    continue
-                
-                try:
-                    ipr = ImagePromptRow(
-                        prompt=img_data['prompt'],  # Video-optimized prompt
-                        start_image=img_data['image']
-                    )
-                    main_window.image_prompts.append(ipr)
-                    added_count += 1
-                    print(f"[SEND TO VIDEO] ✅ Added image {idx + 1} to queue (total in queue: {len(main_window.image_prompts)})")
-                except Exception as e:
-                    print(f"[SEND TO VIDEO] ❌ Error adding image {idx + 1}: {e}")
-                    import traceback
-                    traceback.print_exc()
-            
-            print(f"[SEND TO VIDEO] Added {added_count} images. Total in queue: {len(main_window.image_prompts)}")
-            
-            if added_count == 0:
-                QMessageBox.warning(
-                    self,
-                    "No Images",
-                    "No valid images found to send.\n\n"
-                    "Please ensure images are generated successfully."
+            for img_data in successful_images:
+                ipr = ImagePromptRow(
+                    prompt=img_data['prompt'], 
+                    start_image=img_data['image']
                 )
-                return
+                parent.image_prompts.append(ipr)
             
             # Refresh the Image to Video table
-            print("[SEND TO VIDEO] Refreshing table...")
-            if hasattr(main_window, '_refresh_image_table'):
-                try:
-                    main_window._refresh_image_table()
-                    print(f"[SEND TO VIDEO] ✅ Refreshed Image to Video table (rows: {main_window.tbl_img.rowCount()})")
-                    
-                    # Auto-tick all newly added items
-                    print("[SEND TO VIDEO] Auto-ticking all items for generation...")
-                    if hasattr(main_window, 'tbl_img'):
-                        ticked_count = 0
-                        for r in range(main_window.tbl_img.rowCount()):
-                            w = main_window.tbl_img.cellWidget(r, 0)
-                            if w and hasattr(w, '_cb') and w._cb:
-                                if not w._cb.isChecked():
-                                    w._cb.setChecked(True)
-                                    ticked_count += 1
-                        print(f"[SEND TO VIDEO] ✅ Auto-ticked {ticked_count} items")
-                except Exception as e:
-                    print(f"[SEND TO VIDEO] ❌ Error refreshing table: {e}")
-                    import traceback
-                    traceback.print_exc()
+            if hasattr(parent, '_refresh_image_table'):
+                parent._refresh_image_table()
+                print("[SEND TO VIDEO] Refreshed image table")
             else:
-                print("[SEND TO VIDEO] ⚠️ MainWindow does not have _refresh_image_table method")
+                print("[SEND TO VIDEO] Warning: _refresh_image_table not found")
             
             # Switch to Image to Video tab
-            print("[SEND TO VIDEO] Switching to Image to Video tab...")
-            if hasattr(main_window, 'tabs'):
+            if hasattr(parent, 'tabs'):
+                print(f"[SEND TO VIDEO] Searching for Image to Video tab in {parent.tabs.count()} tabs")
                 tab_found = False
-                for i in range(main_window.tabs.count()):
-                    tab_text = main_window.tabs.tabText(i)
-                    print(f"[SEND TO VIDEO]   Tab {i}: '{tab_text}'")
-                    if "Image to Video" in tab_text or "🎬" in tab_text:
-                        main_window.tabs.setCurrentIndex(i)
-                        print(f"[SEND TO VIDEO] ✅ Switched to Image to Video tab (index {i})")
+                # Find Image to Video tab index - try multiple patterns
+                for i in range(parent.tabs.count()):
+                    tab_text = parent.tabs.tabText(i)
+                    print(f"[SEND TO VIDEO] Tab {i}: '{tab_text}'")
+                    if "Image to Video" in tab_text or "🎬" in tab_text or "Image" in tab_text and "Video" in tab_text:
+                        parent.tabs.setCurrentIndex(i)
                         tab_found = True
+                        print(f"[SEND TO VIDEO] ✅ Switched to tab {i}: '{tab_text}'")
                         break
                 
                 if not tab_found:
-                    print("[SEND TO VIDEO] ⚠️ Image to Video tab not found!")
+                    print("[SEND TO VIDEO] ⚠️ Image to Video tab not found")
             else:
-                print("[SEND TO VIDEO] ⚠️ MainWindow does not have 'tabs' attribute")
+                print("[SEND TO VIDEO] Error: 'tabs' attribute not found on parent")
             
-            # Auto-start video generation
-            print("[SEND TO VIDEO] Auto-starting video generation...")
-            auto_start_msg = ""
-            
-            if hasattr(main_window, 'start_image_generate_queue'):
-                # Check if there are LIVE accounts
-                has_live_account = False
-                if hasattr(main_window, 'accounts'):
-                    live_accounts = [a for a in main_window.accounts if a.status.lower() == "live"]
-                    has_live_account = len(live_accounts) > 0
-                    print(f"[SEND TO VIDEO] Found {len(live_accounts)} LIVE accounts")
-                
-                if has_live_account:
-                    try:
-                        # Use QTimer to ensure UI is updated before starting generation
-                        QTimer.singleShot(500, main_window.start_image_generate_queue)
-                        print("[SEND TO VIDEO] ✅ Scheduled auto-start video generation")
-                        auto_start_msg = "\n\n🎬 Auto-starting video generation..."
-                    except Exception as e:
-                        print(f"[SEND TO VIDEO] ⚠️ Error auto-starting generation: {e}")
-                        auto_start_msg = ""
-                else:
-                    print("[SEND TO VIDEO] ⚠️ No LIVE accounts - cannot auto-start")
-                    auto_start_msg = "\n\n⚠️ Please add a LIVE account to generate videos"
-            else:
-                print("[SEND TO VIDEO] ⚠️ MainWindow does not have start_image_generate_queue method")
-                auto_start_msg = ""
-            
-            self.set_status(f"✅ Sent {added_count} images to Video")
+            self.set_status(f"✅ Sent {len(successful_images)} images to Video")
             
             QMessageBox.information(
                 self,
                 "Success",
-                f"✅ Sent {added_count} images to Image to Video tab!\n\n"
-                f"Switched to Image to Video tab.\n\n"
-                f"Total items in queue: {len(main_window.image_prompts)}"
-                f"{auto_start_msg}"
+                f"✅ Sent {len(successful_images)} images to Image to Video tab!\n\n"
+                f"Switched to Image to Video tab."
             )
             
         except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            print(f"[SEND TO VIDEO] ❌ CRITICAL ERROR: {error_details}")
             QMessageBox.critical(
                 self,
                 "Error",
-                f"Failed to send images to Image to Video:\n\n{str(e)}\n\n"
-                f"Check console for details."
+                f"Failed to send images to Image to Video:\n\n{str(e)}"
             )
     
     def on_cancel_batch(self):
@@ -3229,21 +3482,6 @@ class ImageGeneratorTab(QWidget):
             print(f"❌ Error loading Gemini keys from server: {e}")
             import traceback
             traceback.print_exc()
-    
-    def on_prompt_provider_change(self, provider: str):
-        """Update prompt model options based on provider."""
-        items = []
-        if provider == "ChatGPT":
-            # ChatGPT models: GPT-5 and o3
-            items = ["o3", "gpt-5"]
-        elif provider == "Gemini":
-            # Gemini models: 2.5 Pro and 2.5 Flash
-            items = ["gemini-2.5-pro", "gemini-2.5-flash"]
-        else:  # Groq default
-            items = ["llama-3.3-70b-versatile"]
-        
-        self.provider_model_cb.clear()
-        self.provider_model_cb.addItems(items)
 
 def main():
     """Main function - chỉ dùng khi chạy standalone"""

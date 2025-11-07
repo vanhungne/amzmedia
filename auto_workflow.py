@@ -15,17 +15,23 @@ from typing import List, Optional
 from PySide6.QtCore import QObject, Signal, QTimer, Qt, QMetaObject, Slot
 from PySide6.QtWidgets import QMessageBox, QProgressDialog
 
-# Import from image_tab_full for Groq analysis
+# Import from image_tab_full for AI analysis
 try:
-    from image_tab_full import analyze_script_with_groq
+    from image_tab_full import (
+        analyze_script_with_groq,
+        analyze_script_with_openai,
+        analyze_script_with_gemini
+    )
 except:
     analyze_script_with_groq = None
+    analyze_script_with_openai = None
+    analyze_script_with_gemini = None
 
 
 class AutoWorkflowOrchestrator(QObject):
     """
     Orchestrates automatic workflow across tabs:
-    1. Parse script with Groq AI
+    1. Parse script with AI (Groq/ChatGPT/Gemini - from project settings)
     2. Generate voice with ElevenLabs  
     3. Generate images with Imagen/Gemini
     """
@@ -80,9 +86,11 @@ class AutoWorkflowOrchestrator(QObject):
             self.workflow_error.emit(f"Failed to create folders: {e}")
             return
         
-        # Step 3: Parse script with Groq AI
-        self.step_changed.emit("🤖 Analyzing script with Groq AI...")
-        self.parse_script_with_groq()
+        # Step 3: Parse script with AI (provider from project)
+        provider = getattr(self.project, 'prompt_provider', 'Groq') or 'Groq'
+        model = getattr(self.project, 'prompt_model', 'llama-3.3-70b-versatile') or 'llama-3.3-70b-versatile'
+        self.step_changed.emit(f"🤖 Analyzing script with {provider} ({model})...")
+        self.parse_script_with_ai(provider, model)
     
     def create_folder_structure(self) -> Path:
         """
@@ -139,44 +147,96 @@ class AutoWorkflowOrchestrator(QObject):
         print(f"    └─ Video: {video_dir}")
         return project_folder
     
-    def parse_script_with_groq(self):
-        """Parse script with Groq AI in background thread"""
+    def parse_script_with_ai(self, provider: str, model: str):
+        """Parse script with AI (Groq/ChatGPT/Gemini) in background thread"""
         def worker():
             try:
-                # Load Groq keys
-                groq_keys = self.load_groq_keys()
-                if not groq_keys:
-                    self.workflow_error.emit("No Groq API keys found! Add keys in Settings tab.")
-                    return
-                
-                # Use custom template if provided
-                system_template = self.project.script_template if self.project.script_template else ""
-                
                 # Use num_prompts from project (already randomized 12-24 on import)
                 num_prompts = self.project.num_prompts
                 print(f"[AUTO WORKFLOW] Using num_prompts: {num_prompts} (from project)")
                 
-                # Call Groq AI
-                if analyze_script_with_groq:
-                    prompts = analyze_script_with_groq(
-                        script=self.script_text,
-                        num_parts=num_prompts,
-                        groq_api_key=groq_keys[0]
-                    )
+                # Get custom system prompt from project (if available)
+                custom_prompt = self.project.script_template or ""
+                if custom_prompt:
+                    print(f"[AUTO WORKFLOW] Using custom system prompt from project")
+                else:
+                    print(f"[AUTO WORKFLOW] Using default system prompt")
+                
+                prompts = None
+                
+                # Call appropriate AI based on provider
+                if provider == "ChatGPT":
+                    # Load OpenAI keys
+                    openai_keys = self.load_openai_keys()
+                    if not openai_keys:
+                        self.workflow_error.emit("No OpenAI API keys found! Add keys in Settings tab.")
+                        return
                     
+                    if analyze_script_with_openai:
+                        prompts = analyze_script_with_openai(
+                            script=self.script_text,
+                            num_parts=num_prompts,
+                            openai_api_key=openai_keys[0],
+                            model=model,
+                            custom_system_prompt=custom_prompt
+                        )
+                        print(f"[AUTO WORKFLOW] Got {len(prompts)} prompts from ChatGPT ({model})")
+                    else:
+                        self.workflow_error.emit("OpenAI integration not available")
+                        return
+                        
+                elif provider == "Gemini":
+                    # Load Gemini keys
+                    gemini_keys = self.load_gemini_keys()
+                    if not gemini_keys:
+                        self.workflow_error.emit("No Gemini API keys found! Add keys in Settings tab.")
+                        return
+                    
+                    if analyze_script_with_gemini:
+                        prompts = analyze_script_with_gemini(
+                            script=self.script_text,
+                            num_parts=num_prompts,
+                            gemini_api_key=gemini_keys[0],
+                            model=model,
+                            custom_system_prompt=custom_prompt
+                        )
+                        print(f"[AUTO WORKFLOW] Got {len(prompts)} prompts from Gemini ({model})")
+                    else:
+                        self.workflow_error.emit("Gemini integration not available")
+                        return
+                        
+                else:  # Groq (default)
+                    # Load Groq keys
+                    groq_keys = self.load_groq_keys()
+                    if not groq_keys:
+                        self.workflow_error.emit("No Groq API keys found! Add keys in Settings tab.")
+                        return
+                    
+                    if analyze_script_with_groq:
+                        prompts = analyze_script_with_groq(
+                            script=self.script_text,
+                            num_parts=num_prompts,
+                            groq_api_key=groq_keys[0],
+                            custom_system_prompt=custom_prompt
+                        )
+                        print(f"[AUTO WORKFLOW] Got {len(prompts)} prompts from Groq ({model})")
+                    else:
+                        self.workflow_error.emit("Groq integration not available")
+                        return
+                
+                if prompts:
                     self.prompts = prompts
-                    print(f"[AUTO WORKFLOW] Got {len(prompts)} prompts from Groq")
-                    
                     # Continue to voice generation first, then images
-                    # Use QMetaObject.invokeMethod to run on main thread
                     self.step_changed.emit(f"✅ Generated {len(prompts)} prompts")
                     print("[AUTO WORKFLOW] Invoking generate_voice on main thread")
                     QMetaObject.invokeMethod(self, "generate_voice", Qt.QueuedConnection)
                 else:
-                    self.workflow_error.emit("Groq integration not available")
+                    self.workflow_error.emit(f"Failed to generate prompts with {provider}")
                     
             except Exception as e:
-                self.workflow_error.emit(f"Groq AI error: {e}")
+                self.workflow_error.emit(f"{provider} AI error: {e}")
+                import traceback
+                traceback.print_exc()
         
         threading.Thread(target=worker, daemon=True).start()
     
@@ -424,6 +484,52 @@ class AutoWorkflowOrchestrator(QObject):
                     return [k.strip() for k in keys if k.strip()]
         except Exception as e:
             print(f"Error loading Groq keys: {e}")
+        return []
+    
+    def load_openai_keys(self) -> List[str]:
+        """Load OpenAI API keys from server or settings"""
+        try:
+            # Try to load from server first (if API client available)
+            if hasattr(self.main_window, 'api_client') and self.main_window.api_client:
+                try:
+                    keys = self.main_window.api_client.get_openai_keys()
+                    if keys:
+                        return [k.get('api_key', '').strip() for k in keys if k.get('api_key', '').strip()]
+                except:
+                    pass
+            
+            # Fallback to settings file
+            settings_file = Path(__file__).parent / "vgp_settings.json"
+            if settings_file.exists():
+                with open(settings_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    keys = data.get("openai_keys", [])
+                    return [k.strip() for k in keys if k.strip()]
+        except Exception as e:
+            print(f"Error loading OpenAI keys: {e}")
+        return []
+    
+    def load_gemini_keys(self) -> List[str]:
+        """Load Gemini API keys from server or settings"""
+        try:
+            # Try to load from server first (if API client available)
+            if hasattr(self.main_window, 'api_client') and self.main_window.api_client:
+                try:
+                    keys = self.main_window.api_client.get_gemini_keys()
+                    if keys:
+                        return [k.get('api_key', '').strip() for k in keys if k.get('api_key', '').strip()]
+                except:
+                    pass
+            
+            # Fallback to settings file
+            settings_file = Path(__file__).parent / "vgp_settings.json"
+            if settings_file.exists():
+                with open(settings_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    keys = data.get("gemini_keys", [])
+                    return [k.strip() for k in keys if k.strip()]
+        except Exception as e:
+            print(f"Error loading Gemini keys: {e}")
         return []
     
     def get_audio_tab_index(self) -> int:
