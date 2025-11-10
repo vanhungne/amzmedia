@@ -86,9 +86,36 @@ class AutoWorkflowOrchestrator(QObject):
             self.workflow_error.emit(f"Failed to create folders: {e}")
             return
         
-        # Step 3: Parse script with AI (provider from project)
-        provider = getattr(self.project, 'prompt_provider', 'Groq') or 'Groq'
-        model = getattr(self.project, 'prompt_model', 'llama-3.3-70b-versatile') or 'llama-3.3-70b-versatile'
+        # Step 3: Parse script with AI (provider from Image tab UI OR project)
+        # Priority: Image tab UI (current selection) > Project settings > Default (Groq)
+        provider = None
+        model = None
+        
+        # Try to get from Image tab UI first (user's current selection in combo boxes)
+        image_widget = self.get_image_generator_widget()
+        if image_widget:
+            # Get from UI combo boxes (current selection, even if not saved)
+            if hasattr(image_widget, 'toolbar_provider_cb'):
+                ui_provider = image_widget.toolbar_provider_cb.currentText().strip()
+                if ui_provider:
+                    provider = ui_provider
+                    print(f"[AUTO WORKFLOW] Using provider from Image tab UI: {provider}")
+            
+            if hasattr(image_widget, 'toolbar_model_cb'):
+                ui_model = image_widget.toolbar_model_cb.currentText().strip()
+                if ui_model:
+                    model = ui_model
+                    print(f"[AUTO WORKFLOW] Using model from Image tab UI: {model}")
+        
+        # Fallback to project settings if Image tab UI doesn't have selection
+        if not provider:
+            provider = getattr(self.project, 'prompt_provider', 'Groq') or 'Groq'
+            print(f"[AUTO WORKFLOW] Using provider from project: {provider}")
+        
+        if not model:
+            model = getattr(self.project, 'prompt_model', 'llama-3.3-70b-versatile') or 'llama-3.3-70b-versatile'
+            print(f"[AUTO WORKFLOW] Using model from project: {model}")
+        
         self.step_changed.emit(f"🤖 Analyzing script with {provider} ({model})...")
         self.parse_script_with_ai(provider, model)
     
@@ -302,20 +329,43 @@ class AutoWorkflowOrchestrator(QObject):
             audio_widget.update_chunks_display()
             print(f"[GENERATE_VOICE] Loaded {len(audio_widget.chunks)} chunks into widget")
             
-            # Set voice ID - Auto create if not found
+            # Set voice ID - Validate first, then use
             voice_set = False
+            
+            # First, validate voice ID exists on ElevenLabs (even if in cache)
+            print(f"[GENERATE_VOICE] Validating voice ID: {self.project.voice_id}")
+            voice_valid = self.validate_voice_id(audio_widget, self.project.voice_id)
+            
+            if not voice_valid:
+                error_msg = f"Voice ID '{self.project.voice_id}' không hợp lệ hoặc không tồn tại trên ElevenLabs!"
+                print(f"[GENERATE_VOICE] ❌ {error_msg}")
+                print(f"[GENERATE_VOICE] Possible reasons:")
+                print(f"  1. Voice ID is incorrect: {self.project.voice_id}")
+                print(f"  2. Voice was deleted from ElevenLabs")
+                print(f"  3. Voice belongs to a different account")
+                print(f"  4. API keys don't have access to this voice")
+                print(f"[GENERATE_VOICE] 🛑 Stopping workflow - Voice validation failed")
+                
+                self.step_changed.emit(f"❌ Voice error: {error_msg}")
+                self.workflow_error.emit(error_msg)
+                return  # Stop workflow completely
+            
+            # Voice is valid on ElevenLabs API, now check if it's in local cache
+            print(f"[GENERATE_VOICE] ✅ Voice ID '{self.project.voice_id}' is valid on ElevenLabs API")
+            
             for idx in range(audio_widget.voice_combo.count()):
                 if audio_widget.voice_combo.itemData(idx) == self.project.voice_id:
                     audio_widget.voice_combo.setCurrentIndex(idx)
                     voice_set = True
-                    print(f"[GENERATE_VOICE] Set voice ID at index {idx}")
+                    print(f"[GENERATE_VOICE] ✅ Voice found in local cache at index {idx}")
                     break
             
             if not voice_set:
-                print(f"[GENERATE_VOICE] ⚠️ Project voice ID not found: {self.project.voice_id}")
-                # Auto-create voice with project name abbreviation (max 3 chars)
+                # Voice is valid on ElevenLabs API but not in local cache, add it
+                print(f"[GENERATE_VOICE] ℹ️ Voice ID '{self.project.voice_id}' exists on ElevenLabs but not in local cache")
+                print(f"[GENERATE_VOICE] Adding voice to local cache for future use...")
                 voice_name = self.get_project_abbreviation(self.project.name)
-                print(f"[GENERATE_VOICE] Auto-creating voice: {voice_name}")
+                print(f"[GENERATE_VOICE] Voice name: {voice_name}")
                 
                 new_voice = {
                     'id': self.project.voice_id,
@@ -332,15 +382,24 @@ class AutoWorkflowOrchestrator(QObject):
                     if audio_widget.voice_combo.itemData(idx) == self.project.voice_id:
                         audio_widget.voice_combo.setCurrentIndex(idx)
                         voice_set = True
-                        print(f"[GENERATE_VOICE] ✅ Auto-created and set voice '{voice_name}' at index {idx}")
+                        print(f"[GENERATE_VOICE] ✅ Voice '{voice_name}' added to cache and ready to use (index {idx})")
+                        print(f"[GENERATE_VOICE] ✅ Voice validated on ElevenLabs API → Added to local cache → Ready to generate")
                         break
                 
-                self.step_changed.emit(f"✅ Auto-created voice: {voice_name}")
+                self.step_changed.emit(f"✅ Voice validated and added to cache: {voice_name}")
             
-            # Set output directory
+            # Set output directory and script path (for file naming)
             if hasattr(audio_widget, 'project_chunks_audio_dir'):
                 audio_widget.project_chunks_audio_dir = self.project.voice_output
                 print(f"[GENERATE_VOICE] Set output dir: {self.project.voice_output}")
+            
+            # Set script path so merge_audio_files can use it for file naming
+            if hasattr(audio_widget, 'project_text_path'):
+                audio_widget.project_text_path = self.script_path
+                print(f"[GENERATE_VOICE] Set script path: {self.script_path}")
+            elif hasattr(audio_widget, 'script_path'):
+                audio_widget.script_path = self.script_path
+                print(f"[GENERATE_VOICE] Set script path: {self.script_path}")
             
             self.step_changed.emit(f"🎙️ Generating {len(chunks)} voice chunks...")
             
@@ -450,6 +509,84 @@ class AutoWorkflowOrchestrator(QObject):
             import traceback
             traceback.print_exc()
             self.workflow_error.emit(f"Image generation error: {e}")
+    
+    def validate_voice_id(self, audio_widget, voice_id: str) -> bool:
+        """
+        Validate if voice ID exists and is accessible via ElevenLabs API
+        
+        Args:
+            audio_widget: ElevenLabs widget with API manager
+            voice_id: Voice ID to validate
+        
+        Returns:
+            True if voice exists and is accessible, False otherwise
+        """
+        if not voice_id or not voice_id.strip():
+            return False
+        
+        # Try to get an API key
+        if not hasattr(audio_widget, 'api_manager'):
+            print(f"[VALIDATE VOICE] No API manager available")
+            return False
+        
+        api_manager = audio_widget.api_manager
+        if not api_manager or not hasattr(api_manager, 'get_next'):
+            print(f"[VALIDATE VOICE] API manager not properly initialized")
+            return False
+        
+        import requests
+        
+        # Try up to 3 API keys to validate voice
+        original_key_index = None
+        if hasattr(api_manager, 'current_key_index'):
+            original_key_index = api_manager.current_key_index
+        
+        for attempt in range(min(3, len(api_manager.keys) if hasattr(api_manager, 'keys') else 3)):
+            try:
+                api_key = api_manager.get_next()
+                if not api_key:
+                    print(f"[VALIDATE VOICE] No API key available for attempt {attempt + 1}")
+                    continue
+                
+                # Call ElevenLabs API to get voice details
+                url = f"https://api.elevenlabs.io/v1/voices/{voice_id}"
+                headers = {
+                    "xi-api-key": api_key,
+                    "Content-Type": "application/json"
+                }
+                
+                response = requests.get(url, headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    # Restore original key index if we saved it
+                    if original_key_index is not None and hasattr(api_manager, 'current_key_index'):
+                        api_manager.current_key_index = original_key_index
+                    print(f"[VALIDATE VOICE] ✅ Voice {voice_id} exists and is accessible")
+                    return True
+                elif response.status_code == 404:
+                    # Restore original key index
+                    if original_key_index is not None and hasattr(api_manager, 'current_key_index'):
+                        api_manager.current_key_index = original_key_index
+                    print(f"[VALIDATE VOICE] ❌ Voice {voice_id} not found (404)")
+                    return False
+                elif response.status_code == 401:
+                    print(f"[VALIDATE VOICE] ⚠️ API key invalid, trying next key...")
+                    continue
+                else:
+                    print(f"[VALIDATE VOICE] ⚠️ API returned status {response.status_code}, trying next key...")
+                    continue
+                    
+            except Exception as e:
+                print(f"[VALIDATE VOICE] Error validating voice: {e}")
+                continue
+        
+        # Restore original key index if we saved it
+        if original_key_index is not None and hasattr(api_manager, 'current_key_index'):
+            api_manager.current_key_index = original_key_index
+        
+        # If all attempts failed, assume voice is invalid
+        print(f"[VALIDATE VOICE] ❌ Could not validate voice {voice_id} after 3 attempts")
+        return False
     
     def get_project_abbreviation(self, project_name: str) -> str:
         """

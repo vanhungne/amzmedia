@@ -3295,24 +3295,59 @@ class ElevenLabsGUI(QMainWindow):
             self.log(f"✅ All {len(audio_files_ordered)} audio files validated")
             
             # ============================================================
-            # STEP 4: XÁC ĐỊNH OUTPUT PATH (CÙNG CẤP VỚI FILE TXT GỐC)
+            # STEP 4: XÁC ĐỊNH OUTPUT PATH (3 PRIORITY LEVELS)
             # ============================================================
             self.log("📁 Determining output path...")
             
-            if self.project_text_path and os.path.exists(self.project_text_path):
-                # Lưu cùng thư mục với file txt gốc
+            output_dir = None
+            output_name = None
+            
+            # PRIORITY 1: Auto workflow voice output folder (HIGHEST)
+            if self.project_chunks_audio_dir:
+                output_dir = self.project_chunks_audio_dir
+                # Get script name from script_path if available
+                if hasattr(self, 'project_text_path') and self.project_text_path:
+                    output_name = os.path.splitext(os.path.basename(self.project_text_path))[0]
+                elif hasattr(self, 'script_path') and self.script_path:
+                    output_name = os.path.splitext(os.path.basename(self.script_path))[0]
+                else:
+                    # Use script name from script input if available
+                    script_text = self.script_input.toPlainText().strip()
+                    if script_text:
+                        # Try to extract name from first line or use default
+                        first_line = script_text.split('\n')[0][:50].strip()
+                        output_name = re.sub(r'[^\w\s-]', '', first_line).strip().replace(' ', '_')
+                        if not output_name:
+                            output_name = "script"
+                if not output_name:
+                    output_name = "merged_audio"
+                
+                merged_file = os.path.join(output_dir, f"{output_name}.mp3")
+                self.log(f"   ✅ Using auto workflow voice folder: {output_dir}")
+                self.log(f"   📄 Output file: {merged_file}")
+            
+            # PRIORITY 2: Same folder as TXT file (legacy)
+            elif self.project_text_path and os.path.exists(self.project_text_path):
                 output_dir = os.path.dirname(self.project_text_path)
                 output_name = os.path.splitext(os.path.basename(self.project_text_path))[0]
                 merged_file = os.path.join(output_dir, f"{output_name}.mp3")
                 
-                self.log(f"   Input TXT: {self.project_text_path}")
-                self.log(f"   Output MP3: {merged_file}")
+                self.log(f"   📁 Using TXT file folder: {output_dir}")
+                self.log(f"   📄 Output file: {merged_file}")
+            
+            # PRIORITY 3: Fallback to default output folder
             else:
-                # Fallback: Lưu trong output folder
+                output_dir = OUTPUT_DIR
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                merged_file = os.path.join(OUTPUT_DIR, f"merged_{timestamp}.mp3")
-                self.log(f"   Output: {merged_file}")
-                self.log("   ⚠️ No source file path - using timestamp")
+                output_name = f"merged_{timestamp}"
+                merged_file = os.path.join(OUTPUT_DIR, f"{output_name}.mp3")
+                self.log(f"   ⚠️ No project/TXT path - using fallback: {OUTPUT_DIR}")
+                self.log(f"   📄 Output file: {merged_file}")
+            
+            # Ensure output directory exists
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
+                self.log(f"   ✅ Created output directory: {output_dir}")
             
             # ============================================================
             # STEP 5: MERGE FILES THEO THỨ TỰ TUYỆT ĐỐI

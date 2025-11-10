@@ -61,43 +61,277 @@ AR_GEMINI = ["1:1", "3:4", "4:3", "9:16", "16:9", "2:3", "3:2", "4:5", "5:4", "2
 IMAGEN_SIZES = ["1K", "2K"]
 PERSON_GEN = ["dont_allow", "allow_adult", "allow_all"]
 
+# ==================== SCRIPT CACHE SYSTEM ====================
+CACHE_DIR = Path(r"C:\genImage\Cache")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+def get_script_cache_key(script: str, provider: str, model: str = "") -> str:
+    """Generate cache key from script content, provider, and model"""
+    import hashlib
+    content = f"{script}_{provider}_{model}".encode('utf-8')
+    return hashlib.sha256(content).hexdigest()[:16]
+
+def get_cache_path(script: str, provider: str, model: str = "") -> Path:
+    """Get cache file path for script"""
+    cache_key = get_script_cache_key(script, provider, model)
+    return CACHE_DIR / f"script_cache_{provider.lower()}_{cache_key}.json"
+
+def load_script_cache(script: str, provider: str, model: str = "") -> Optional[dict]:
+    """Load cached script analysis (summary + character details)"""
+    cache_path = get_cache_path(script, provider, model)
+    if cache_path.exists():
+        try:
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                cache_data = json.load(f)
+                # Verify cache is for same script (check first 500 chars)
+                if cache_data.get('script_preview') == script[:500]:
+                    print(f"[CACHE] ✅ Loaded cache for {provider} ({model})")
+                    return cache_data
+                else:
+                    print(f"[CACHE] ⚠️ Cache mismatch, will regenerate")
+        except Exception as e:
+            print(f"[CACHE] ❌ Error loading cache: {e}")
+    return None
+
+def save_script_cache(script: str, provider: str, model: str, script_summary: str, character_details: dict):
+    """Save script analysis to cache"""
+    cache_path = get_cache_path(script, provider, model)
+    try:
+        cache_data = {
+            "script_preview": script[:500],  # First 500 chars for verification
+            "script_summary": script_summary,
+            "character_details": character_details,
+            "provider": provider,
+            "model": model,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, ensure_ascii=False, indent=2)
+        print(f"[CACHE] 💾 Saved cache to {cache_path}")
+    except Exception as e:
+        print(f"[CACHE] ❌ Error saving cache: {e}")
+
+def extract_character_details_from_script(script: str, provider: str, model: str, api_key: str) -> dict:
+    """Extract character details from script using AI"""
+    print(f"[CHARACTER EXTRACTION] Extracting character details from script...")
+    
+    character_extraction_prompt = """Extract and analyze all characters from this script. Return a JSON object with this exact structure:
+
+{
+  "main_characters": [
+    {
+      "name": "character name",
+      "role": "protagonist/antagonist",
+      "age": "age range",
+      "appearance": "detailed physical description (skin tone, hair color/style, eye color, body type)",
+      "clothing": "detailed clothing description (colors, styles, fabrics)",
+      "personality": "personality traits",
+      "gender": "male/female"
+    }
+  ],
+  "supporting_characters": [
+    {
+      "name": "character name or 'background characters'",
+      "role": "supporting/background",
+      "appearance": "general appearance description",
+      "clothing": "clothing description if specified",
+      "count": "number of characters (if multiple)"
+    }
+  ],
+  "script_summary": "Brief 2-3 sentence summary of the script's main plot and setting"
+}
+
+IMPORTANT:
+- Extract ALL physical details: skin tone, hair color, eye color, clothing colors, clothing styles
+- Be VERY specific about colors and clothing details
+- For main characters, include EVERY detail mentioned in script
+- For background characters, describe their general appearance and clothing
+- Ensure consistency in character descriptions across the script
+
+Return ONLY the JSON object, no other text."""
+
+    try:
+        if provider == "Groq":
+            import requests
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "llama-3.3-70b-versatile",
+                "messages": [
+                    {"role": "user", "content": f"{character_extraction_prompt}\n\nScript:\n{script[:8000]}"}  # Limit script length
+                ],
+                "temperature": 0.3,
+                "max_tokens": 2000
+            }
+            response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=60
+            )
+            response.raise_for_status()
+            result = response.json()
+            content = result["choices"][0]["message"]["content"].strip()
+            
+        elif provider == "ChatGPT":
+            try:
+                import openai
+            except ImportError:
+                print("[CHARACTER EXTRACTION] ❌ openai library not installed")
+                return {"main_characters": [], "supporting_characters": [], "script_summary": ""}
+            
+            client = openai.OpenAI(api_key=api_key)
+            response = client.chat.completions.create(
+                model=model if model else "gpt-4o-mini",
+                messages=[
+                    {"role": "user", "content": f"{character_extraction_prompt}\n\nScript:\n{script[:8000]}"}
+                ],
+                temperature=0.3,
+                max_tokens=2000
+            )
+            content = response.choices[0].message.content.strip()
+            
+        elif provider == "Gemini":
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model=model if model else "gemini-2.0-flash-exp",
+                contents=[
+                    {"role": "user", "parts": [{"text": f"{character_extraction_prompt}\n\nScript:\n{script[:8000]}"}]}
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=0.3,
+                    max_output_tokens=2000
+                )
+            )
+            content = response.text.strip()
+        else:
+            return {"main_characters": [], "supporting_characters": [], "script_summary": ""}
+        
+        # Parse JSON from response
+        import re
+        json_match = re.search(r'\{.*\}', content, re.DOTALL)
+        if json_match:
+            character_data = json.loads(json_match.group())
+            print(f"[CHARACTER EXTRACTION] ✅ Extracted {len(character_data.get('main_characters', []))} main characters")
+            return character_data
+        else:
+            print(f"[CHARACTER EXTRACTION] ⚠️ Could not parse JSON from response")
+            return {"main_characters": [], "supporting_characters": [], "script_summary": ""}
+            
+    except Exception as e:
+        print(f"[CHARACTER EXTRACTION] ❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"main_characters": [], "supporting_characters": [], "script_summary": ""}
+
+def format_character_details_for_prompt(character_details: dict) -> str:
+    """Format character details into a string to include in system prompt"""
+    if not character_details:
+        return ""
+    
+    main_chars = character_details.get("main_characters", [])
+    supporting_chars = character_details.get("supporting_characters", [])
+    script_summary = character_details.get("script_summary", "")
+    
+    result = "\n\n=== CHARACTER DETAILS (MUST USE IN ALL PROMPTS) ===\n"
+    
+    if script_summary:
+        result += f"Script Summary: {script_summary}\n\n"
+    
+    if main_chars:
+        result += "MAIN CHARACTERS (Use EXACT descriptions in ALL prompts):\n"
+        for char in main_chars:
+            name = char.get("name", "Unknown")
+            role = char.get("role", "")
+            age = char.get("age", "")
+            appearance = char.get("appearance", "")
+            clothing = char.get("clothing", "")
+            gender = char.get("gender", "")
+            
+            result += f"- {name} ({role}, {gender}, {age}):\n"
+            if appearance:
+                result += f"  Appearance: {appearance}\n"
+            if clothing:
+                result += f"  Clothing: {clothing}\n"
+            result += "\n"
+    
+    if supporting_chars:
+        result += "SUPPORTING/BACKGROUND CHARACTERS:\n"
+        for char in supporting_chars:
+            name = char.get("name", "Unknown")
+            appearance = char.get("appearance", "")
+            clothing = char.get("clothing", "")
+            count = char.get("count", "")
+            
+            result += f"- {name}"
+            if count:
+                result += f" (x{count})"
+            result += ":\n"
+            if appearance:
+                result += f"  Appearance: {appearance}\n"
+            if clothing:
+                result += f"  Clothing: {clothing}\n"
+            result += "\n"
+    
+    result += "CRITICAL: Copy EXACT character descriptions from above to ALL prompts. NEVER use 'same outfit' or 'same look'. ALWAYS repeat full descriptions.\n"
+    
+    return result
+
 # Default System Prompt for Script Analysis (shared across all AI providers)
-DEFAULT_SCRIPT_ANALYSIS_PROMPT = """You are an AI that creates image generation prompts for emotional YouTube videos targeting American audience. Split the script into EXACTLY {x} parts and create ONE English prompt for each part.
+DEFAULT_SCRIPT_ANALYSIS_PROMPT = """Bạn là GPT chuyên xử lý các kịch bản dài bằng tiếng Anh để phục vụ sản xuất video cảm xúc dành cho khán giả YouTube tại Mỹ.
 
-CRITICAL RULES:
-- 100% ENGLISH ONLY - absolutely NO Vietnamese, NO translations, NO summaries, NO explanations
-- Style: ultra-realistic photo, 16:9
-- 2 main characters: 1 protagonist (calm, composed) + 1 antagonist (angry, aggressive)
-- Add 2-5 background characters to amplify emotions (judging, laughing, recording...)
-- Characters MUST interact with EACH OTHER, NEVER look at camera
-- Physical descriptions in parentheses ( ): skin tone, clothing details, hair color/style
-- CRITICAL: Copy EXACT character descriptions from first prompt to ALL subsequent prompts
-  - NEVER use "same outfit", "same look", "as before"
-  - ALWAYS repeat full description: (fair skin, wearing elegant navy blue dress, blonde wavy hair)
-- Bright, clear lighting with high contrast
-- American/European appearance - NO black hair
-- FORBIDDEN words: "revealing cleavage", "showing cleavage", "emerald green eyes"
+Quy trình tự động xử lý như sau:
 
-STRICT OUTPUT FORMAT - THIS IS EXTREMELY CRITICAL:
-DO NOT include ANY of these:
-- NO "Scene 1", "Scene 2", etc.
-- NO "Phân cảnh 1", "Phân cảnh 2", etc.  
-- NO "**Prompt vẽ ảnh:**" or "**Prompt:**" labels
-- NO "**Tóm tắt ngắn:**" (Vietnamese summary)
-- NO "**Bản dịch prompt:**" (Vietnamese translation)
-- NO headers, NO labels, NO section markers
-- NO Vietnamese text ANYWHERE
-- NO "---" separators
-- NO "###" markdown headers
+1. Đọc hiểu kịch bản (Simple Woman - Nữ chính hiền lành, Nam phản diện tức giận)
+2. Chia kịch bản thành {x} phần như yêu cầu
+3. Prompt cần phải có sự đồng nhất chi tiết về trang phục, màu da và ngoại hình của các nhân vật trong toàn bộ các phân cảnh (nội dung được giữ nguyên từ prompt đầu tiên, KHÔNG DÙNG cụm "same outfit")
+4. Các nhân vật trong phân cảnh phải nhìn, tương tác với nhau
+5. Mô tả ngoại hình nhân vật (màu tóc, màu da, quần áo...) phải đặt trong dấu ngoặc đơn () theo đúng format chuẩn
+6. Dưới mỗi phân cảnh, có:
+   - Một prompt vẽ ảnh phù hợp, đồng nhất trang phục và đặc điểm nhân vật chính/phụ giữa các phân cảnh
+7. Quy định mô tả ngoại hình và trang phục dành cho kịch bản Simple Woman:
+   - (female protagonist: 25 years old (replace if script has old), light skin, natural rosy lips, blonde hair (random hairs style), (random color) eyes, wearing a bright light gray T-shirt tucked into her pants (her pants same the script), the T-shirt made of soft elastic fabric that clings over an exaggerated upper silhouette, medium breasts; perfect body).
+   - Nam phản diện trang phục going như trong kịch bản nhưng phải đồng nhất về màu sắc trang phục cụ thể, nam phản diện luôn mắc trang trang phục khác biệt với nhân vật nền, nam phản diện có cảm xúc mạnh hơn, có sự uy hiếp và kinh bỉ hoặc hoảng sợ thể hiện rõ hơn ở mỗi prompt.
+   - Tất cả nhân vật nền mặc đồng phục và đồng nhất màu của trang phục.
+   - Tất cả nhân vật đều là người Mỹ
+   - (môi trường và ánh sáng, ưu tiên tương phản, tươi sáng, ưu tiên bối cảnh ánh sáng ban ngày, mô tả môi trường chân thực và thực tế)
 
-ONLY output pure English image prompts directly!
-Separate each prompt with double line break (blank line between prompts).
 
-CORRECT OUTPUT FORMAT:
-Ultra-realistic photo, 16:9. A woman (fair skin, wearing elegant navy blue dress, blonde wavy hair) standing confidently in a bright modern living room, looking at a man (tan skin, wearing casual grey sweater, brown hair) who is angrily pointing at her with raised voice. 3 neighbors in the background (varied appearances) watching with judgmental expressions, some whispering. Natural daylight streaming through large windows, contemporary furniture, high contrast lighting.
+NGUYÊN TẮC VIẾT PROMPT (ÁP DỤNG CHO MỌI PROMPT):
+- Ngôn ngữ: tiếng Anh
+- Style mặc định: Realistic photo, raw photo
+- Luôn có 2 nhân vật chính (nam & nữ) HOẶC (nữ & nữ): 1 chính diện và 1 phản diện
+- Nhân vật chính: điềm tĩnh, nội tâm sâu sắc
+- Phản diện: cảm xúc mạnh, khó kiểm soát (chửi, la hét, chỉ tay, khiêu khích...)
+- Có 2-5+ nhân vật nền góp phần tăng cảm xúc (cười nhạo, khinh thường...)
+- Ánh sáng tươi sáng, rõ ràng, màu sắc tương phản
+- Nhân vật: người Mỹ hoặc châu Âu, màu tóc KHÔNG MÔ TẢ MÀU ĐEN
+- Các nhân vật trong prompt phải tương tác với nhau và đặc biệt KHÔNG NHÌN THẲNG VÀO MÀN HÌNH hay phá vỡ bức tường thứ 4
+- Khi chia thành nhiều prompt (x hình), GPT KHÔNG BAO GIỜ được dùng từ "same outfit" hoặc "same look". Thay vào đó, phải giữ nguyên phần mô tả ngoại hình từ prompt đầu tiên (gồm màu da, quần áo, tóc...) và copy y hệt vào các prompt sau
+- Mô tả về ngoại hình của nhân vật trong prompt phải được đặt trong ( ), nếu mô tả không phải ngoại hình sẽ phải nằm ngoài ( )
+- Những từ KHÔNG ĐƯỢC xuất hiện trong prompt: revealing cleavage, showing cleavage, emerald green eyes
 
-Ultra-realistic photo, 16:9. A woman (fair skin, wearing elegant navy blue dress, blonde wavy hair) calmly walking away while a man (tan skin, wearing casual grey sweater, brown hair) continues shouting behind her with clenched fists. 4 onlookers (varied appearances) in background, some shaking heads, others recording with phones. Bright outdoor setting, modern apartment courtyard, sharp focus on main characters.
+### Prompt Structure Format
+**Critical**: Each prompt must be written in ONE SINGLE LINE with NO line breaks.
 
+**Required structure order**:
+1. Style
+2. Camera angle + setting/location
+3. (Main character's physical appearance)
+4. Main character's action
+5. (Antagonist's physical appearance)
+6. Antagonist's action
+7. Background details
+
+FORMAT OUTPUT:
+Chỉ trả về các prompt tiếng Anh, mỗi prompt trên một dòng. KHÔNG CẦN tiêu đề "Phân cảnh X" hay bản dịch tiếng Việt. Chỉ cần prompt thuần tiếng Anh, mỗi prompt một dòng, ngăn cách bằng dấu xuống dòng đôi.
+
+VÍ DỤ FORMAT OUTPUT:
+Realistic photo, raw photo, high-detail, bright daylight — tracking shot through a concrete lane under simulated fire with paint impacts; (25-year-old woman, light skin, natural rosy lips, blonde hair in a tight regulation bun, gray eyes, wearing a bright light gray fitted T-shirt tucked into khaki cargo pants, the soft elastic fabric clings over an exaggerated upper silhouette with deep shadows and strong tension lines under daylight, athletic yet feminine build, perfect body) — the woman tears clothing with taped improvised shears and packs a wound using field-expedient material while moving — (30-year-old man, American, light skin, short light brown hair, sharp jawline, wearing a navy-blue training polo with unit patch and name tape, coyote-brown tactical cargo pants with black belt, no headgear, lean muscular build) — the man watches from cover with a cruel smirk, arms folded, radiating hostile challenge — background: 3 American trainees in identical medium-gray training uniforms with matching gray caps flinch at paint strikes, bright sun streaks across wet concrete, everyone engaged with each other not the camera
 (Continue for all {x} scenes - ONLY English prompts, nothing else)"""
 
 PUBLIC_KEY_PEM = b"""-----BEGIN PUBLIC KEY-----
@@ -386,22 +620,33 @@ def parse_prompts_from_response(content: str) -> List[str]:
 
 # ==================== GROQ AI SCRIPT ANALYSIS ====================
 def analyze_script_with_groq(script: str, num_parts: int, groq_api_key: str, custom_system_prompt: str = "") -> List[str]:
-    """
-    Gửi script đến Groq API để phân tích và tạo prompts theo quy tắc.
-    
-    Args:
-        script: Nội dung script cần phân tích
-        num_parts: Số lượng prompts cần tạo
-        groq_api_key: API key của Groq
-        custom_system_prompt: System prompt tùy biến từ Project (nếu có)
-    
-    Returns: List các prompts đã được tạo ra.
-    """
+
     if not requests:
         raise Exception("requests library not installed")
     
     if not groq_api_key or not groq_api_key.strip():
         raise Exception("Groq API key is empty")
+    
+    # Check cache first for character details
+    provider = "Groq"
+    model = "llama-3.3-70b-versatile"  # Default Groq model
+    cached_data = load_script_cache(script, provider, model)
+    character_details = None
+    script_summary = None
+    
+    if cached_data:
+        character_details = cached_data.get("character_details", {})
+        script_summary = cached_data.get("script_summary", "")
+        print(f"[CACHE] ✅ Using cached character details and summary")
+    else:
+        # Extract character details from script
+        print(f"[CACHE] ⚠️ No cache found, extracting character details...")
+        character_details = extract_character_details_from_script(script, provider, model, groq_api_key)
+        script_summary = character_details.get("script_summary", "") if character_details else ""
+        
+        # Save to cache
+        if character_details:
+            save_script_cache(script, provider, model, script_summary, character_details)
     
     # Use custom prompt from Project if provided, otherwise use shared default
     system_prompt = custom_system_prompt if custom_system_prompt.strip() else DEFAULT_SCRIPT_ANALYSIS_PROMPT
@@ -416,10 +661,26 @@ def analyze_script_with_groq(script: str, num_parts: int, groq_api_key: str, cus
     # Replace {x} placeholder with actual num_parts
     system_prompt = system_prompt.replace("{x}", str(num_parts))
     
+    # Add character details to system prompt for consistency
+    if character_details:
+        character_details_str = format_character_details_for_prompt(character_details)
+        system_prompt += character_details_str
+    
     # CRITICAL: Always enforce English output, even if custom prompt says otherwise
     system_prompt += "\n\nCRITICAL OVERRIDE: Output MUST be 100% ENGLISH ONLY. Absolutely NO Vietnamese, NO translations, NO summaries. ONLY pure English image prompts."
 
-    user_prompt = f"Analyze this script and split it into EXACTLY {num_parts} parts. Create one English image generation prompt for each part following the rules above. OUTPUT IN ENGLISH ONLY:\n\n{script}"
+    # Use script summary if available and script is very long, otherwise use full script
+    script_to_analyze = script
+    if script_summary and len(script) > 10000:
+        print(f"[SCRIPT] Script is long ({len(script)} chars), using summary + full script for context")
+        script_to_analyze = f"SCRIPT SUMMARY:\n{script_summary}\n\nFULL SCRIPT (for detailed scene analysis):\n{script}"
+    else:
+        # If script is still too long, truncate but keep character context
+        if len(script_to_analyze) > 15000:
+            print(f"[SCRIPT] Script is very long ({len(script)} chars), truncating to 15000 chars")
+            script_to_analyze = script_to_analyze[:15000] + "\n\n[Script continues...]"
+
+    user_prompt = f"Analyze this script and split it into EXACTLY {num_parts} parts. Create one English image generation prompt for each part following the rules above. Use the CHARACTER DETAILS section to ensure absolute consistency across all prompts. OUTPUT IN ENGLISH ONLY:\n\n{script_to_analyze}"
     
     # Call Groq API
     headers = {
@@ -493,23 +754,32 @@ def analyze_script_with_groq(script: str, num_parts: int, groq_api_key: str, cus
 
 # ==================== OPENAI/CHATGPT SCRIPT ANALYSIS ====================
 def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str, model: str, custom_system_prompt: str = "") -> List[str]:
-    """
-    Analyze script using OpenAI/ChatGPT API.
-    
-    Args:
-        script: Script content to analyze
-        num_parts: Number of prompts to generate
-        openai_api_key: OpenAI API key
-        model: Model name (gpt-5, o3)
-        custom_system_prompt: Custom system prompt from Project (if any)
-    
-    Returns: List of prompts
-    """
+
     if not requests:
         raise Exception("requests library not installed")
     
     if not openai_api_key or not openai_api_key.strip():
         raise Exception("OpenAI API key is empty")
+    
+    # Check cache first for character details
+    provider = "ChatGPT"
+    cached_data = load_script_cache(script, provider, model)
+    character_details = None
+    script_summary = None
+    
+    if cached_data:
+        character_details = cached_data.get("character_details", {})
+        script_summary = cached_data.get("script_summary", "")
+        print(f"[CACHE] ✅ Using cached character details and summary")
+    else:
+        # Extract character details from script
+        print(f"[CACHE] ⚠️ No cache found, extracting character details...")
+        character_details = extract_character_details_from_script(script, provider, model, openai_api_key)
+        script_summary = character_details.get("script_summary", "") if character_details else ""
+        
+        # Save to cache
+        if character_details:
+            save_script_cache(script, provider, model, script_summary, character_details)
     
     # Use custom prompt from Project if provided, otherwise use shared default
     system_prompt = custom_system_prompt if custom_system_prompt.strip() else DEFAULT_SCRIPT_ANALYSIS_PROMPT
@@ -523,10 +793,26 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
     
     system_prompt = system_prompt.replace("{x}", str(num_parts))
     
+    # Add character details to system prompt for consistency
+    if character_details:
+        character_details_str = format_character_details_for_prompt(character_details)
+        system_prompt += character_details_str
+    
     # CRITICAL: Always enforce English output, even if custom prompt says otherwise
     system_prompt += "\n\nCRITICAL OVERRIDE: Output MUST be 100% ENGLISH ONLY. Absolutely NO Vietnamese, NO translations, NO summaries. ONLY pure English image prompts."
     
-    user_prompt = f"Analyze this script and split it into EXACTLY {num_parts} parts. Create one English image generation prompt for each part following the rules above. OUTPUT IN ENGLISH ONLY:\n\n{script}"
+    # Use script summary if available and script is very long, otherwise use full script
+    script_to_analyze = script
+    if script_summary and len(script) > 10000:
+        print(f"[SCRIPT] Script is long ({len(script)} chars), using summary + full script for context")
+        script_to_analyze = f"SCRIPT SUMMARY:\n{script_summary}\n\nFULL SCRIPT (for detailed scene analysis):\n{script}"
+    else:
+        # If script is still too long, truncate but keep character context
+        if len(script_to_analyze) > 15000:
+            print(f"[SCRIPT] Script is very long ({len(script)} chars), truncating to 15000 chars")
+            script_to_analyze = script_to_analyze[:15000] + "\n\n[Script continues...]"
+    
+    user_prompt = f"Analyze this script and split it into EXACTLY {num_parts} parts. Create one English image generation prompt for each part following the rules above. Use the CHARACTER DETAILS section to ensure absolute consistency across all prompts. OUTPUT IN ENGLISH ONLY:\n\n{script_to_analyze}"
     
     headers = {
         "Authorization": f"Bearer {openai_api_key}",
@@ -605,6 +891,26 @@ def analyze_script_with_gemini(script: str, num_parts: int, gemini_api_key: str,
     if not gemini_api_key or not gemini_api_key.strip():
         raise Exception("Gemini API key is empty")
     
+    # Check cache first for character details
+    provider = "Gemini"
+    cached_data = load_script_cache(script, provider, model)
+    character_details = None
+    script_summary = None
+    
+    if cached_data:
+        character_details = cached_data.get("character_details", {})
+        script_summary = cached_data.get("script_summary", "")
+        print(f"[CACHE] ✅ Using cached character details and summary")
+    else:
+        # Extract character details from script
+        print(f"[CACHE] ⚠️ No cache found, extracting character details...")
+        character_details = extract_character_details_from_script(script, provider, model, gemini_api_key)
+        script_summary = character_details.get("script_summary", "") if character_details else ""
+        
+        # Save to cache
+        if character_details:
+            save_script_cache(script, provider, model, script_summary, character_details)
+    
     # Use custom prompt from Project if provided, otherwise use shared default
     system_prompt = custom_system_prompt if custom_system_prompt.strip() else DEFAULT_SCRIPT_ANALYSIS_PROMPT
     
@@ -617,10 +923,26 @@ def analyze_script_with_gemini(script: str, num_parts: int, gemini_api_key: str,
     
     system_prompt = system_prompt.replace("{x}", str(num_parts))
     
+    # Add character details to system prompt for consistency
+    if character_details:
+        character_details_str = format_character_details_for_prompt(character_details)
+        system_prompt += character_details_str
+    
     # CRITICAL: Always enforce English output, even if custom prompt says otherwise
     system_prompt += "\n\nCRITICAL OVERRIDE: Output MUST be 100% ENGLISH ONLY. Absolutely NO Vietnamese, NO translations, NO summaries. ONLY pure English image prompts."
     
-    user_prompt = f"Analyze this script and split it into EXACTLY {num_parts} parts. Create one English image generation prompt for each part following the rules above. OUTPUT IN ENGLISH ONLY:\n\n{script}"
+    # Use script summary if available and script is very long, otherwise use full script
+    script_to_analyze = script
+    if script_summary and len(script) > 10000:
+        print(f"[SCRIPT] Script is long ({len(script)} chars), using summary + full script for context")
+        script_to_analyze = f"SCRIPT SUMMARY:\n{script_summary}\n\nFULL SCRIPT (for detailed scene analysis):\n{script}"
+    else:
+        # If script is still too long, truncate but keep character context
+        if len(script_to_analyze) > 15000:
+            print(f"[SCRIPT] Script is very long ({len(script)} chars), truncating to 15000 chars")
+            script_to_analyze = script_to_analyze[:15000] + "\n\n[Script continues...]"
+    
+    user_prompt = f"Analyze this script and split it into EXACTLY {num_parts} parts. Create one English image generation prompt for each part following the rules above. Use the CHARACTER DETAILS section to ensure absolute consistency across all prompts. OUTPUT IN ENGLISH ONLY:\n\n{script_to_analyze}"
     
     try:
         client = genai.Client(api_key=gemini_api_key)
@@ -2466,9 +2788,9 @@ class ImageGeneratorTab(QWidget):
         right_layout.addWidget(toolbar)
         
         # Rows scroll
-        rows_scroll = QScrollArea()
-        rows_scroll.setWidgetResizable(True)
-        rows_scroll.setStyleSheet(f"""
+        self.rows_scroll = QScrollArea()
+        self.rows_scroll.setWidgetResizable(True)
+        self.rows_scroll.setStyleSheet(f"""
             QScrollArea {{
                 background-color: {Theme.BG_PRIMARY};
                 border: none;
@@ -2493,8 +2815,8 @@ class ImageGeneratorTab(QWidget):
         self.rows_layout.setSpacing(6)
         self.rows_layout.addStretch()
         
-        rows_scroll.setWidget(self.rows_widget)
-        right_layout.addWidget(rows_scroll)
+        self.rows_scroll.setWidget(self.rows_widget)
+        right_layout.addWidget(self.rows_scroll)
         
         # Status bar
         status_bar = QWidget()
@@ -3370,6 +3692,33 @@ class ImageGeneratorTab(QWidget):
         completed = self.progress.value()
         self.set_status(f"✅ Complete! Generated {completed} prompts")
         self.worker = None
+        
+        # Auto-start next queued jobs
+        self._auto_start_queued_jobs()
+    
+    def _auto_start_queued_jobs(self):
+        """Automatically start next queued jobs after current batch completes"""
+        # Find all rows with "QUEUE" status (not busy, not done, not failed)
+        queued_rows = []
+        for row in self.rows:
+            # Check status badge text to find queued rows
+            if hasattr(row, 'status_badge') and row.status_badge:
+                status_text = row.status_badge.text().strip().upper()
+                # Only start rows that are queued (not generating, done, or failed)
+                if status_text == "QUEUE":
+                    queued_rows.append(row)
+        
+        if queued_rows:
+            concurrency = self.get_concurrency()
+            # Limit to concurrency number to avoid starting too many at once
+            rows_to_start = queued_rows[:concurrency]
+            print(f"[AUTO START] Found {len(queued_rows)} queued jobs, starting {len(rows_to_start)} jobs (concurrency: {concurrency})...")
+            self.set_status(f"🔄 Auto-starting {len(rows_to_start)} queued jobs...")
+            # Start generation for queued rows with a small delay to ensure UI is ready
+            QTimer.singleShot(500, lambda: self.generate_rows(rows_to_start))
+        else:
+            print("[AUTO START] No queued jobs found - all jobs completed!")
+            self.set_status("✅ All jobs completed!")
     
     def set_status(self, text: str):
         self.status_label.setText(text)
