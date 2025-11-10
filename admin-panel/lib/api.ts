@@ -74,6 +74,20 @@ export interface GeminiKey {
   created_by_username?: string;
 }
 
+export interface OpenAIKey {
+  id: number;
+  api_key: string;
+  name: string | null;
+  assigned_user_id: number | null;
+  status: 'active' | 'dead';
+  last_used: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+  assigned_username?: string;
+  created_by_username?: string;
+}
+
 // Auth API
 export async function login(username: string, password: string) {
   const res = await fetch(`${API_BASE}/auth/login`, {
@@ -442,6 +456,54 @@ export async function deleteGeminiKey(id: number): Promise<void> {
   if (!res.ok) {
     const error = await res.json();
     throw new Error(error.error || 'Failed to delete Gemini key');
+  }
+}
+
+// OpenAI Keys API
+export async function getOpenAIKeys(): Promise<{ keys: OpenAIKey[] }> {
+  const res = await fetch(`${API_BASE}/openai`, {
+    credentials: 'include',
+  });
+  if (!res.ok) throw new Error('Failed to fetch OpenAI keys');
+  return res.json();
+}
+
+export async function createOpenAIKey(key: { api_key: string; name?: string; assigned_user_id?: number }): Promise<{ key: OpenAIKey }> {
+  const res = await fetch(`${API_BASE}/openai`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(key),
+  });
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.error || 'Failed to create OpenAI key');
+  }
+  return res.json();
+}
+
+export async function updateOpenAIKey(id: number, key: Partial<OpenAIKey>): Promise<{ key: OpenAIKey }> {
+  const res = await fetch(`${API_BASE}/openai/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(key),
+  });
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.error || 'Failed to update OpenAI key');
+  }
+  return res.json();
+}
+
+export async function deleteOpenAIKey(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/openai/${id}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.error || 'Failed to delete OpenAI key');
   }
 }
 

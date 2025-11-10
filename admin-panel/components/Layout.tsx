@@ -51,6 +51,7 @@ export default function Layout({ children }: LayoutProps) {
     { href: '/dashboard/projects', label: 'Projects', icon: FolderOpen, desc: 'Quản lý dự án' },
     { href: '/dashboard/users', label: 'Users', icon: Users, desc: 'Quản lý người dùng' },
     { href: '/dashboard/elevenlabs', label: 'ElevenLabs', icon: Key, desc: 'API Keys' },
+    { href: '/dashboard/openai', label: 'OpenAI', icon: Key, desc: 'OpenAI Keys' },
     { href: '/dashboard/gemini', label: 'Gemini', icon: ImageIcon, desc: 'Gemini Keys' },
     { href: '/dashboard/proxy', label: 'Proxy', icon: Network, desc: 'Proxy Keys' },
     { href: '/dashboard/activity', label: 'Activity', icon: Activity, desc: 'Lịch sử hoạt động' },
