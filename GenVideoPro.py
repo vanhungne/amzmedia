@@ -700,13 +700,9 @@ class ProjectDialog(QDialog):
                 for display_name, model_id in openai_models:
                     self.combo_model.addItem(display_name, model_id)
             else:
-                # Fallback to hardcoded list if API fails
+                # Fallback to hardcoded list if API fails - ONLY GPT-5 models
                 self.combo_model.addItem("GPT-5 (Latest)", "gpt-5")
-                self.combo_model.addItem("GPT-5 Turbo", "gpt-5-turbo")
-                self.combo_model.addItem("GPT-4o (Recommended)", "gpt-4o")
-                self.combo_model.addItem("GPT-4o Mini", "gpt-4o-mini")
-                self.combo_model.addItem("GPT-4 Turbo", "gpt-4-turbo-preview")
-                self.combo_model.addItem("GPT-3.5 Turbo", "gpt-3.5-turbo")
+                self.combo_model.addItem("GPT-5 Nano", "gpt-5-nano")
         elif provider == "Gemini":
             # Gemini models
             self.combo_model.addItem("Gemini 2.0 Flash (Recommended)", "gemini-2.0-flash-exp")
@@ -748,39 +744,30 @@ class ProjectDialog(QDialog):
             data = response.json()
             models = data.get("data", [])
             
-            # Filter for GPT models only
+            # Filter for GPT-5 models only
             gpt_models = []
             model_priority = {
                 "gpt-5": 1000,
-                "gpt-5-turbo": 900,
-                "gpt-5o": 850,
-                "gpt-4o": 800,
-                "gpt-4o-mini": 700,
-                "gpt-4-turbo": 600,
-                "gpt-4": 500,
-                "gpt-3.5-turbo": 400
+                "gpt-5-nano": 950
             }
             
             for model in models:
                 model_id = model.get("id", "")
-                if not model_id.startswith("gpt-"):
+                # Only allow GPT-5 models
+                if not model_id.startswith("gpt-5"):
                     continue
                 
                 # Get base model name for priority
                 base_name = model_id.split("-")[0:2]
                 base_key = "-".join(base_name)
                 
-                # Create display name
-                if "gpt-5" in model_id:
+                # Create display name - only GPT-5 variants
+                if "gpt-5-nano" in model_id or "gpt-5nano" in model_id:
+                    display_name = "GPT-5 Nano"
+                elif "gpt-5" in model_id:
                     display_name = "GPT-5 " + model_id.replace("gpt-5-", "").replace("gpt-5", "Latest").title()
-                elif "gpt-4o" in model_id:
-                    display_name = "GPT-4o " + model_id.replace("gpt-4o-", "").title()
-                elif "gpt-4" in model_id:
-                    display_name = "GPT-4 " + model_id.replace("gpt-4-", "").title()
-                elif "gpt-3.5" in model_id:
-                    display_name = "GPT-3.5 " + model_id.replace("gpt-3.5-", "").title()
                 else:
-                    display_name = model_id.upper()
+                    continue  # Skip non-GPT-5 models
                 
                 # Get priority
                 priority = model_priority.get(base_key, 0)
@@ -2411,7 +2398,9 @@ class VideoCellWidget(QWidget):
             # Modern card with shadow effect
             self.card = QFrame()
             self.card.setObjectName("videoCard")
+            # Initial size 240x135 (16:9 ratio)
             self.card.setFixedSize(240, 135)
+            self._aspect_ratio = 16.0 / 9.0  # Store aspect ratio
             
             # Shadow effect will be added after fade-in animation completes
             
@@ -2484,6 +2473,9 @@ class VideoCellWidget(QWidget):
             lay = QVBoxLayout(self)
             lay.setContentsMargins(6, 6, 6, 6)
             lay.addWidget(self.card)
+            
+            # Store reference to layout for resizing
+            self._card_layout = lay
             
             # Fade-in animation using opacity effect (more reliable for embedded widgets)
             self.opacity_effect = QGraphicsOpacityEffect(self.card)
@@ -2561,9 +2553,16 @@ class VideoCellWidget(QWidget):
                 from PIL import Image
                 from PySide6.QtGui import QImage
                 
+                # Get current card size for dynamic thumbnail size
+                if hasattr(self, 'card') and self.card:
+                    card_size = self.card.size()
+                    thumb_size = (card_size.width(), card_size.height())
+                else:
+                    thumb_size = (240, 135)  # Default fallback
+                
                 # Load and resize with high quality
                 pil_img = Image.open(self.image_path)
-                pil_img.thumbnail((240, 135), Image.Resampling.LANCZOS)
+                pil_img.thumbnail(thumb_size, Image.Resampling.LANCZOS)
                 
                 # Convert to QPixmap
                 if pil_img.mode == "RGBA":
@@ -2593,6 +2592,21 @@ class VideoCellWidget(QWidget):
                 self._show_fallback_icon()
         else:
             self._show_fallback_icon()
+    
+    def update_size(self, width: int, height: int):
+        """Update card size while maintaining aspect ratio"""
+        if hasattr(self, 'card') and self.card:
+            self.card.setFixedSize(width, height)
+            # Update thumbnail if loaded - reload with new size
+            if hasattr(self, 'thumbnail_label') and self.thumbnail_label and hasattr(self, 'image_path'):
+                # Force reload thumbnail with new dimensions
+                if self.image_path:
+                    # Clear cache for this image to force reload
+                    if self.image_path in VideoCellWidget._thumbnail_cache:
+                        del VideoCellWidget._thumbnail_cache[self.image_path]
+                    # Reload thumbnail
+                    self._loaded = False
+                    self._do_load_thumbnail()
     
     def _show_fallback_icon(self):
         """Show fallback icon when thumbnail fails"""
@@ -4448,8 +4462,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Video Generator Pro v2")
-        self.setFixedSize(1360, 900)
-        self.setWindowFlag(Qt.WindowMaximizeButtonHint, False)
+        self.resize(1360, 900)  # Allow resizing instead of fixed size
+        self.setMinimumSize(1200, 700)  # Set minimum size for usability
         self.thread_pool = QThreadPool.globalInstance()
         self._theme_name = "Indigo"
 
@@ -5105,7 +5119,11 @@ class MainWindow(QMainWindow):
         vw = VideoCellWidget(video_path, self, show_preview=show_preview, image_path=image_path)
         self.tbl_img.setCellWidget(row_idx, 5, vw)
         
-        h = 150 if show_preview else 60
+        # Calculate row height based on Video column width to maintain 16:9
+        video_col_width = self.tbl_img.columnWidth(5)
+        video_width = video_col_width - 12  # Subtract padding
+        video_height = int(video_width * 9 / 16)
+        h = video_height + 12 if show_preview else 60  # Add padding back
         self.tbl_img.verticalHeader().resizeSection(row_idx, h)
 
         # Open button
@@ -6603,21 +6621,26 @@ class MainWindow(QMainWindow):
             ["Select", "STT", "Prompt", "Image", "Status", "Video", "Open", "Regen", "Delete"]
         )
         header = self.tbl_img.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.Fixed)
-        vheader = self.tbl_img.verticalHeader()
-        vheader.setSectionResizeMode(QHeaderView.Fixed)
-        vheader.setDefaultSectionSize(160)
-        vheader.setVisible(False)
-
+        # Allow resizing for all columns
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        # Set initial column widths
         self.tbl_img.setColumnWidth(0, 60)
         self.tbl_img.setColumnWidth(1, 40)
         self.tbl_img.setColumnWidth(2, 450)
         self.tbl_img.setColumnWidth(3, 180)
         self.tbl_img.setColumnWidth(4, 145)
-        self.tbl_img.setColumnWidth(5, 256)
+        self.tbl_img.setColumnWidth(5, 256)  # Video column - will maintain 16:9
         self.tbl_img.setColumnWidth(6, 80)
         self.tbl_img.setColumnWidth(7, 60)   # Regen
         self.tbl_img.setColumnWidth(8, 60)   # Delete
+        
+        # Connect signal to maintain 16:9 aspect ratio for Video column
+        header.sectionResized.connect(self._on_video_column_resized)
+        
+        vheader = self.tbl_img.verticalHeader()
+        vheader.setSectionResizeMode(QHeaderView.Fixed)
+        vheader.setDefaultSectionSize(160)
+        vheader.setVisible(False)
 
         self.tbl_img.setAlternatingRowColors(False)
         self.tbl_img.setShowGrid(False)
@@ -6761,6 +6784,27 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Imported", f"Đã nạp {count} items")
         self._update_img_stats()
         
+    def _on_video_column_resized(self, logical_index: int, old_size: int, new_size: int):
+        """Maintain 16:9 aspect ratio for Video column when resized"""
+        if logical_index != 5:  # Video column is index 5
+            return
+        
+        # Calculate height based on 16:9 aspect ratio
+        # Account for padding (12px total: 6px top + 6px bottom)
+        video_width = new_size - 12  # Subtract horizontal padding
+        video_height = int(video_width * 9 / 16)
+        row_height = video_height + 12  # Add padding back
+        
+        # Update all rows with VideoCellWidget
+        for row in range(self.tbl_img.rowCount()):
+            widget = self.tbl_img.cellWidget(row, 5)  # Video column
+            if isinstance(widget, VideoCellWidget):
+                # Update VideoCellWidget card size
+                widget.update_size(video_width, video_height)
+            
+            # Update row height to maintain aspect ratio
+            self.tbl_img.verticalHeader().resizeSection(row, row_height)
+    
     def _on_img_tbl_clicked(self, row: int, col: int):
         # Cột 2 là "Prompt"
         if col == 2 and 0 <= row < len(self.image_prompts):
@@ -7000,6 +7044,67 @@ class MainWindow(QMainWindow):
             if getattr(w, "_cb", None):
                 w._cb.setChecked(False)
 
+    def _img_regenerate_row(self, row: int):
+        """Regenerate video for a specific row"""
+        if not (0 <= row < len(self.image_prompts)):
+            return
+        
+        # Check if job is currently running
+        if row in self.img_active_rows:
+            QMessageBox.warning(self, "Busy", "Job đang chạy. Hãy dừng trước khi regenerate.")
+            return
+        
+        ipr = self.image_prompts[row]
+        
+        # Check for LIVE account
+        live = [a for a in self.accounts if a.status.lower()=="live"]
+        if not live:
+            QMessageBox.warning(self, "No account", "Không có tài khoản LIVE.")
+            return
+        
+        cookie_path = live[0].path
+        out_dir = Path(self.edit_outdir.text() or str(APP_DIR / "outputs"))
+        model = self.current_model()
+        outputs = self.current_outputs()
+        
+        # Reset status and clear old video
+        ipr.status = "Queued"
+        ipr.video = ""
+        
+        # Update UI
+        sp = self._ensure_img_progress_cell(row)
+        sp.set_progress(0, "Queued")
+        
+        # Clear video cell
+        self.tbl_img.setItem(row, 5, QTableWidgetItem(""))
+        self.tbl_img.setItem(row, 6, QTableWidgetItem(""))
+        
+        # Generate new name base
+        name_base = f"{row+1:03d}_{_slugify(ipr.prompt, 28)}"
+        
+        # Create and start worker
+        worker = ImageVideoWorker(
+            row, cookie_path, ipr.start_image,
+            ipr.prompt, model, outputs, out_dir, name_base,
+            timeout=self.current_img_timeout(),
+            retries=self.current_retries()
+        )
+        
+        worker.signals.progress.connect(self._on_img_progress)
+        worker.signals.done.connect(self._on_img_done)
+        worker.signals.finished.connect(self._on_img_finished)
+        
+        self.img_running_jobs += 1
+        self.img_active_rows.add(row)
+        self.thread_pool.start(worker)
+        
+        # Update UI state
+        if self.img_running_jobs > 0:
+            self.btn_img_generate.setEnabled(False)
+            self.btn_img_stop.setEnabled(True)
+        
+        print(f"[REGENERATE] Started regeneration for row {row}")
+    
     def _delete_img_row(self, row: int):
         if not (0 <= row < len(self.image_prompts)):
             return
@@ -7107,6 +7212,7 @@ class MainWindow(QMainWindow):
             worker.signals.finished.connect(self._on_img_finished)
             
             self.img_running_jobs += 1
+            self.img_active_rows.add(r)
             self.thread_pool.start(worker)
 
     def _start_row_glow(self, row: int, is_image: bool = False):
@@ -7137,6 +7243,9 @@ class MainWindow(QMainWindow):
         
         self._stop_row_glow(row, is_image=True)
         
+        # Remove from active rows
+        self.img_active_rows.discard(row)
+        
         # Check stop flag - nếu bị stop thì không update Done/Failed
         if self.img_stop_flag.get("stop"):
             # Job bị stop giữa chừng - đã reset về queue ở on_img_stop_clicked
@@ -7161,14 +7270,26 @@ class MainWindow(QMainWindow):
     def _on_img_finished(self):
         """Image-to-Video job finished callback"""
         self.img_running_jobs -= 1
+        print(f"[IMG FINISHED] Job finished. Remaining jobs: {self.img_running_jobs}")
         
         # Nếu bị stop, không làm gì thêm
         if self.img_stop_flag.get("stop"):
+            print("[IMG FINISHED] Stop flag is set, not starting next jobs")
             return
         
+        # Always check for queued jobs when a job finishes
+        # This ensures queue continues even if img_running_jobs > 0 (concurrency > 1)
         if self.img_running_jobs <= 0:
+            print("[IMG FINISHED] All running jobs finished, checking for queued jobs...")
             # Check for queued jobs before showing Done message
             self._auto_start_queued_img_jobs()
+        else:
+            # Even if there are still running jobs, check if we can start more (concurrency limit)
+            print(f"[IMG FINISHED] {self.img_running_jobs} jobs still running, checking if we can start more...")
+            conc = self.current_concurrency()
+            if self.img_running_jobs < conc:
+                # We have capacity to start more jobs
+                self._auto_start_queued_img_jobs()
     
     def _auto_start_queued_img_jobs(self):
         """Automatically start next queued image-to-video jobs after current batch completes"""
@@ -7180,17 +7301,38 @@ class MainWindow(QMainWindow):
             if not (getattr(w, "_cb", None) and w._cb.isChecked()):
                 continue
             
-            # Check status from progress cell
+            # Check status - allow "Queued" or empty/initial status
             sp = self._ensure_img_progress_cell(r)
+            status_text = ""
             if hasattr(sp, 'label') and sp.label:
                 status_text = sp.label.text().strip()
-                if status_text == "Queued":
-                    queued_rows.append(r)
+            
+            # Also check ipr.status directly
+            ipr_status = getattr(ipr, 'status', '').strip().lower() if hasattr(ipr, 'status') else ''
+            
+            # Consider as queued if:
+            # 1. Status text is "Queued" or empty
+            # 2. ipr.status is empty, "queued", or not "done"/"failed"
+            is_queued = (
+                status_text.lower() == "queued" or 
+                (not status_text and ipr_status in ("", "queued")) or
+                (ipr_status not in ("done", "failed") and status_text.lower() not in ("done", "failed", "saved"))
+            )
+            
+            if is_queued:
+                queued_rows.append(r)
+                print(f"[AUTO START IMG] Found queued row {r}: status_text='{status_text}', ipr_status='{ipr_status}'")
         
         if queued_rows:
             conc = self.current_concurrency()
-            rows_to_start = queued_rows[:conc]
-            print(f"[AUTO START IMG] Found {len(queued_rows)} queued jobs, starting {len(rows_to_start)} jobs (concurrency: {conc})...")
+            # Calculate how many jobs we can start based on current running jobs
+            available_slots = conc - self.img_running_jobs
+            if available_slots <= 0:
+                print(f"[AUTO START IMG] No available slots (running: {self.img_running_jobs}, concurrency: {conc})")
+                return
+            
+            rows_to_start = queued_rows[:available_slots]
+            print(f"[AUTO START IMG] Found {len(queued_rows)} queued jobs, starting {len(rows_to_start)} jobs (available slots: {available_slots}, concurrency: {conc}, running: {self.img_running_jobs})...")
             
             # Get necessary params
             live = [a for a in self.accounts if a.status.lower()=="live"]
@@ -7211,6 +7353,10 @@ class MainWindow(QMainWindow):
                 ipr = self.image_prompts[r]
                 name_base = f"{r+1:03d}_{_slugify(ipr.prompt, 28)}"
                 
+                # Set status to queued before starting
+                sp = self._ensure_img_progress_cell(r)
+                sp.set_progress(0, "Queued")
+                
                 worker = ImageVideoWorker(
                     r, cookie_path, ipr.start_image,
                     ipr.prompt, model, outputs, out_dir, name_base,
@@ -7223,9 +7369,11 @@ class MainWindow(QMainWindow):
                 worker.signals.finished.connect(self._on_img_finished)
                 
                 self.img_running_jobs += 1
+                self.img_active_rows.add(r)
                 self.thread_pool.start(worker)
+                print(f"[AUTO START IMG] Started job for row {r}")
             
-            print(f"[AUTO START IMG] Started {len(rows_to_start)} new jobs")
+            print(f"[AUTO START IMG] Started {len(rows_to_start)} new jobs. Total running: {self.img_running_jobs}")
         else:
             # No more queued jobs
             print("[AUTO START IMG] No queued jobs found - all jobs completed!")

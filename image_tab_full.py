@@ -169,7 +169,7 @@ Script:
             
             client = openai.OpenAI(api_key=api_key)
             response = client.chat.completions.create(
-                model=model if model else "gpt-4o-mini",
+                model=model if model else "gpt-5",
                 messages=[
                     {"role": "user", "content": summary_prompt.format(script_content=script_for_summary)}
                 ],
@@ -294,7 +294,7 @@ Return ONLY the JSON object, no other text."""
             
             client = openai.OpenAI(api_key=api_key)
             response = client.chat.completions.create(
-                model=model if model else "gpt-4o-mini",
+                model=model if model else "gpt-5",
                 messages=[
                     {"role": "user", "content": f"{character_extraction_prompt}\n\nScript:\n{script_for_extraction}"}
                 ],
@@ -940,14 +940,14 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
     # Use script summary if available and script is very long, otherwise use full script
     script_to_analyze = script
     
-    # GPT-5 has large context window, can handle longer scripts
-    # Only truncate if EXTREMELY long (>50k chars) to avoid timeout
-    max_script_length = 50000 if "gpt-5" in model.lower() else 30000
+    # GPT-5 has large context window, can handle much longer scripts
+    # Increased limit to handle very long scripts (200k chars for GPT-5)
+    max_script_length = 200000 if "gpt-5" in model.lower() else 30000
     
     if script_summary and len(script) > 20000:
         # If we have summary, use it for context but keep more of the script
         if "gpt-5" in model.lower():
-            # GPT-5: Use summary + more script content (up to 50k chars)
+            # GPT-5: Use summary + more script content (up to 200k chars)
             if len(script) > max_script_length:
                 print(f"[GPT-5] Script is very long ({len(script)} chars), using summary + first {max_script_length} chars")
                 script_to_analyze = f"SCRIPT SUMMARY (full story overview):\n{script_summary}\n\nSCRIPT (first {max_script_length} chars for detailed analysis):\n{script[:max_script_length]}\n\n[Script continues... Total: {len(script)} chars. Use summary for full story context.]"
@@ -980,30 +980,28 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
         "Content-Type": "application/json"
     }
     
-    # Validate and normalize model name
+    # Validate and normalize model name - ONLY GPT-5 models allowed
     valid_models = [
-        "gpt-5", "gpt-5-turbo", "gpt-5o",  # GPT-5 models
-        "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4-turbo-preview", 
-        "gpt-4", "gpt-3.5-turbo"
+        "gpt-5", "gpt-5-nano"  # Only GPT-5 models allowed
     ]
     
     # Normalize model name (case-insensitive, remove spaces)
     model_normalized = model.strip().lower().replace(" ", "-")
     
-    # Check if model is valid or try to match
+    # Check if model is valid or try to match - ONLY GPT-5 models
     model_to_use = model
     if model_normalized not in [m.lower() for m in valid_models]:
-        # Try to find closest match
-        if "gpt-5" in model_normalized:
+        # Try to find closest match - only GPT-5 variants
+        if "gpt-5-nano" in model_normalized or "gpt-5nano" in model_normalized:
+            model_to_use = "gpt-5-nano"
+            print(f"[OPENAI] Using GPT-5-nano model (normalized from '{model}')")
+        elif "gpt-5" in model_normalized:
             model_to_use = "gpt-5"  # Default GPT-5
             print(f"[OPENAI] Using GPT-5 model (normalized from '{model}')")
-        elif "gpt-4o" in model_normalized:
-            model_to_use = "gpt-4o"
-            print(f"[OPENAI] Using gpt-4o model (normalized from '{model}')")
         else:
-            # Fallback to gpt-4o-mini if model not recognized
-            print(f"[WARNING] Model '{model}' may not be valid. Using 'gpt-4o-mini' as fallback.")
-            model_to_use = "gpt-4o-mini"
+            # Fallback to gpt-5 if model not recognized (only GPT-5 allowed)
+            print(f"[WARNING] Model '{model}' is not a GPT-5 model. Using 'gpt-5' as fallback.")
+            model_to_use = "gpt-5"
     else:
         # Find exact match
         for valid_model in valid_models:
@@ -1011,26 +1009,24 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
                 model_to_use = valid_model
                 break
     
-    # Adjust max_tokens based on model capabilities (x10 for higher output capacity)
-    if "gpt-5" in model_to_use.lower():
+    # Adjust max_tokens based on model capabilities - only GPT-5 models
+    if "gpt-5-nano" in model_to_use.lower():
+        max_tokens = 120000  # GPT-5-nano supports high limits
+    elif "gpt-5" in model_to_use.lower():
         max_tokens = 160000  # GPT-5 supports higher limits (x10 from 16000)
-    elif "gpt-4o" in model_to_use.lower() or "gpt-4-turbo" in model_to_use.lower():
-        max_tokens = 80000  # x10 from 8000
-    elif "gpt-4" in model_to_use.lower():
-        max_tokens = 80000  # x10 from 8000
-    else:  # gpt-3.5-turbo
-        max_tokens = 40000  # x10 from 4000
+    else:
+        # Fallback to GPT-5 defaults
+        max_tokens = 160000
     
     print(f"[OPENAI] Using model: {model_to_use}, max_tokens: {max_tokens}")
     
     # OpenAI Model Parameter Support Matrix
     # o1/o3 series: Use max_completion_tokens, no temperature control
-    # GPT-5 series: May not be available yet, fallback to gpt-4o
-    # GPT-4 series: Standard parameters supported
+    # GPT-5 series only - no fallback to older models
     
     o1_models = ["o1", "o1-mini", "o1-preview", "o3", "o3-mini"]
     reasoning_models = o1_models  # Models with reasoning capabilities
-    gpt5_models = ["gpt-5", "gpt-5-turbo", "gpt-5o"]
+    gpt5_models = ["gpt-5", "gpt-5-nano"]
     
     is_o1_model = any(model_to_use.lower().startswith(m.lower()) for m in o1_models)
     is_gpt5_model = any(model_to_use.lower().startswith(m.lower()) for m in gpt5_models)
@@ -1145,16 +1141,16 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
                                 raise requests.exceptions.HTTPError(f"Status {response.status_code}", response=response)
                         except (requests.exceptions.Timeout, requests.exceptions.ReadTimeout) as timeout_error:
                             print(f"[OPENAI ERROR] Request timed out after removing temperature: {timeout_error}")
-                            # Timeout with GPT-5/o1 models - fallback to gpt-4o immediately
-                            if any(m in model_to_use.lower() for m in ["gpt-5", "o1", "o3"]):
-                                print(f"[OPENAI] Model '{model_to_use}' is timing out. Falling back to gpt-4o...")
+                            # Timeout with GPT-5 models - try gpt-5-nano as fallback
+                            if "gpt-5" in model_to_use.lower():
+                                fallback_model = "gpt-5-nano" if "gpt-5-nano" not in model_to_use.lower() else "gpt-5"
+                                print(f"[OPENAI] Model '{model_to_use}' is timing out. Falling back to {fallback_model}...")
                                 payload = {
-                                    "model": "gpt-4o",
+                                    "model": fallback_model,
                                     "messages": payload["messages"],
-                                    "temperature": 0.7,
-                                    "max_tokens": 80000
+                                    "max_tokens": 120000 if "nano" in fallback_model else 160000
                                 }
-                                print(f"[OPENAI] Retrying with model: gpt-4o")
+                                print(f"[OPENAI] Retrying with model: {fallback_model}")
                                 response = requests.post(
                                     "https://api.openai.com/v1/chat/completions",
                                     headers=headers,
@@ -1162,22 +1158,22 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
                                     timeout=180
                                 )
                                 if response.status_code == 200:
-                                    print(f"[OPENAI] ✅ Success with fallback model: gpt-4o")
+                                    print(f"[OPENAI] ✅ Success with fallback model: {fallback_model}")
                                 else:
                                     response.raise_for_status()
                             else:
                                 raise
                         except requests.exceptions.HTTPError:
-                            # Still failed, try fallback to gpt-4o
-                            if any(m in model_to_use.lower() for m in ["gpt-5", "o1", "o3"]):
-                                print(f"[OPENAI] Still failed. Falling back to gpt-4o...")
+                            # Still failed, try fallback to gpt-5-nano
+                            if "gpt-5" in model_to_use.lower():
+                                fallback_model = "gpt-5-nano" if "gpt-5-nano" not in model_to_use.lower() else "gpt-5"
+                                print(f"[OPENAI] Still failed. Falling back to {fallback_model}...")
                                 payload = {
-                                    "model": "gpt-4o",
+                                    "model": fallback_model,
                                     "messages": payload["messages"],
-                                    "temperature": 0.7,
-                                    "max_tokens": 80000
+                                    "max_tokens": 120000 if "nano" in fallback_model else 160000
                                 }
-                                print(f"[OPENAI] Retrying with model: gpt-4o")
+                                print(f"[OPENAI] Retrying with model: {fallback_model}")
                                 response = requests.post(
                                     "https://api.openai.com/v1/chat/completions",
                                     headers=headers,
@@ -1185,7 +1181,7 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
                                     timeout=180
                                 )
                                 if response.status_code == 200:
-                                    print(f"[OPENAI] ✅ Success with fallback model: gpt-4o")
+                                    print(f"[OPENAI] ✅ Success with fallback model: {fallback_model}")
                                 else:
                                     response.raise_for_status()
                             else:
@@ -1228,22 +1224,22 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
                         else:
                             response.raise_for_status()
                     
-                    # Handle model not found - fallback to gpt-4o
+                    # Handle model not found - fallback to gpt-5-nano
                     elif ("model" in error_message.lower() or error_param == "model" or 
                           error_code in ["model_not_found", "invalid_model"] or
                           "not found" in error_message.lower()):
                         print(f"[OPENAI ERROR] Model '{model_to_use}' may be invalid or not available.")
-                        # Fallback to gpt-4o for unavailable models
-                        if any(m in model_to_use.lower() for m in ["gpt-5", "o1", "o3"]):
-                            print(f"[OPENAI ERROR] Model '{model_to_use}' not available. Falling back to gpt-4o...")
-                            # Rebuild payload for gpt-4o with proper parameters
+                        # Fallback to gpt-5-nano for unavailable models
+                        if "gpt-5" in model_to_use.lower():
+                            fallback_model = "gpt-5-nano" if "gpt-5-nano" not in model_to_use.lower() else "gpt-5"
+                            print(f"[OPENAI ERROR] Model '{model_to_use}' not available. Falling back to {fallback_model}...")
+                            # Rebuild payload for fallback with proper parameters
                             payload = {
-                                "model": "gpt-4o",
+                                "model": fallback_model,
                                 "messages": payload["messages"],
-                                "temperature": 0.7,
-                                "max_tokens": 80000
+                                "max_tokens": 120000 if "nano" in fallback_model else 160000
                             }
-                            print(f"[OPENAI] Retrying with model: gpt-4o")
+                            print(f"[OPENAI] Retrying with model: {fallback_model}")
                             response = requests.post(
                                 "https://api.openai.com/v1/chat/completions",
                                 headers=headers,
@@ -1251,11 +1247,11 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
                                 timeout=180
                             )
                             if response.status_code == 200:
-                                print(f"[OPENAI] ✅ Success with fallback model: gpt-4o")
+                                print(f"[OPENAI] ✅ Success with fallback model: {fallback_model}")
                             else:
                                 response.raise_for_status()
                         else:
-                            print(f"[OPENAI ERROR] Try one of: gpt-4o, gpt-4o-mini, gpt-4-turbo-preview")
+                            print(f"[OPENAI ERROR] Try one of: gpt-5, gpt-5-nano")
                             response.raise_for_status()
                     
                     # Handle max_tokens too high
@@ -1342,21 +1338,21 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
     
     except (requests.exceptions.Timeout, requests.exceptions.ReadTimeout) as timeout_error:
         print(f"[OPENAI ERROR] Request timed out with model '{model_to_use}': {timeout_error}")
-        # If GPT-5/o1/o3 timed out, fallback to gpt-4o and retry
-        if any(m in model_to_use.lower() for m in ["gpt-5", "o1", "o3"]):
-            print(f"[OPENAI] Model '{model_to_use}' timed out. Falling back to gpt-4o...")
+        # If GPT-5 timed out, fallback to gpt-5-nano and retry
+        if "gpt-5" in model_to_use.lower():
+            fallback_model = "gpt-5-nano" if "gpt-5-nano" not in model_to_use.lower() else "gpt-5"
+            print(f"[OPENAI] Model '{model_to_use}' timed out. Falling back to {fallback_model}...")
             try:
-                # Rebuild payload for gpt-4o
+                # Rebuild payload for fallback
                 fallback_payload = {
-                    "model": "gpt-4o",
+                    "model": fallback_model,
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ],
-                    "temperature": 0.7,
-                    "max_tokens": 80000
+                    "max_tokens": 120000 if "nano" in fallback_model else 160000
                 }
-                print(f"[OPENAI] Retrying with model: gpt-4o (timeout fallback)")
+                print(f"[OPENAI] Retrying with model: {fallback_model} (timeout fallback)")
                 response = requests.post(
                     "https://api.openai.com/v1/chat/completions",
                     headers=headers,
@@ -1367,7 +1363,7 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
                 
                 result = response.json()
                 content = result["choices"][0]["message"]["content"].strip()
-                print(f"[OPENAI] ✅ Success with fallback model: gpt-4o")
+                print(f"[OPENAI] ✅ Success with fallback model: {fallback_model}")
                 print(f"[OPENAI AI RAW RESPONSE]:\n{content}\n{'='*80}")
                 
                 final_prompts = parse_prompts_from_response(content)
@@ -3496,14 +3492,10 @@ class ImageGeneratorTab(QWidget):
             if openai_models:
                 items = openai_models
             else:
-                # Fallback to hardcoded list
+                # Fallback to hardcoded list - ONLY GPT-5 models
                 items = [
                     "gpt-5",           # GPT-5 (Latest)
-                    "gpt-5-turbo",     # GPT-5 Turbo
-                    "gpt-4o",         # GPT-4o (Recommended)
-                    "gpt-4o-mini",    # GPT-4o Mini
-                    "gpt-4-turbo-preview",  # GPT-4 Turbo
-                    "gpt-3.5-turbo"   # GPT-3.5 Turbo
+                    "gpt-5-nano"       # GPT-5 Nano
                 ]
         elif provider == "Gemini":
             items = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"]
@@ -3542,22 +3534,17 @@ class ImageGeneratorTab(QWidget):
             data = response.json()
             models = data.get("data", [])
             
-            # Filter for GPT models and sort by priority
+            # Filter for GPT-5 models only and sort by priority
             gpt_models = []
             model_priority = {
                 "gpt-5": 1000,
-                "gpt-5-turbo": 900,
-                "gpt-5o": 850,
-                "gpt-4o": 800,
-                "gpt-4o-mini": 700,
-                "gpt-4-turbo": 600,
-                "gpt-4": 500,
-                "gpt-3.5-turbo": 400
+                "gpt-5-nano": 950
             }
             
             for model in models:
                 model_id = model.get("id", "")
-                if not model_id.startswith("gpt-"):
+                # Only allow GPT-5 models
+                if not model_id.startswith("gpt-5"):
                     continue
                 
                 # Get priority
