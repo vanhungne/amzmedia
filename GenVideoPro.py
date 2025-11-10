@@ -7,13 +7,14 @@ from dataclasses import dataclass
 from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
 from functools import partial
-from PySide6.QtCore import Qt, QThreadPool, QRunnable, Signal, QObject, QSize, QTimer,QEvent, QRect   
+from PySide6.QtCore import Qt, QThreadPool, QRunnable, Signal, QObject, QSize, QTimer, QEvent, QRect, QPropertyAnimation, QEasingCurve   
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QPushButton, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QStyle, QAbstractItemView, QButtonGroup,
     QRadioButton, QFrame, QSpinBox, QCheckBox, QLineEdit, QProgressBar,
-    QTextEdit, QPlainTextEdit, QStackedLayout, QMenu,  QSizePolicy, QComboBox, QTableWidget, QScrollArea
+    QTextEdit, QPlainTextEdit, QStackedLayout, QMenu, QSizePolicy, QComboBox, QTableWidget, QScrollArea,
+    QGraphicsDropShadowEffect, QGraphicsOpacityEffect
 )
 from PySide6.QtGui import QAction, QKeySequence, QPixmap, QPainter, QPen, QColor, QLinearGradient
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -693,16 +694,117 @@ class ProjectDialog(QDialog):
             self.combo_model.addItem("Llama 3.1 8B Instant", "llama-3.1-8b-instant")
             self.combo_model.addItem("Mixtral 8x7B", "mixtral-8x7b-32768")
         elif provider == "ChatGPT":
-            # OpenAI models
-            self.combo_model.addItem("GPT-4o (Recommended)", "gpt-4o")
-            self.combo_model.addItem("GPT-4o Mini", "gpt-4o-mini")
-            self.combo_model.addItem("GPT-4 Turbo", "gpt-4-turbo-preview")
-            self.combo_model.addItem("GPT-3.5 Turbo", "gpt-3.5-turbo")
+            # Try to fetch models from OpenAI API
+            openai_models = self._fetch_openai_models()
+            if openai_models:
+                for display_name, model_id in openai_models:
+                    self.combo_model.addItem(display_name, model_id)
+            else:
+                # Fallback to hardcoded list if API fails
+                self.combo_model.addItem("GPT-5 (Latest)", "gpt-5")
+                self.combo_model.addItem("GPT-5 Turbo", "gpt-5-turbo")
+                self.combo_model.addItem("GPT-4o (Recommended)", "gpt-4o")
+                self.combo_model.addItem("GPT-4o Mini", "gpt-4o-mini")
+                self.combo_model.addItem("GPT-4 Turbo", "gpt-4-turbo-preview")
+                self.combo_model.addItem("GPT-3.5 Turbo", "gpt-3.5-turbo")
         elif provider == "Gemini":
             # Gemini models
             self.combo_model.addItem("Gemini 2.0 Flash (Recommended)", "gemini-2.0-flash-exp")
             self.combo_model.addItem("Gemini 1.5 Pro", "gemini-1.5-pro")
             self.combo_model.addItem("Gemini 1.5 Flash", "gemini-1.5-flash")
+    
+    def _fetch_openai_models(self):
+        """Fetch available models from OpenAI API"""
+        try:
+            import requests
+            
+            # Get API key from API client
+            if not hasattr(self, 'parent') or not self.parent():
+                return None
+            
+            parent = self.parent()
+            if not hasattr(parent, 'api_client') or not parent.api_client:
+                return None
+            
+            api_key = parent.api_client.get_api_key("openai")
+            if not api_key or not api_key.strip():
+                return None
+            
+            # Fetch models from OpenAI API
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            response = requests.get(
+                "https://api.openai.com/v1/models",
+                headers=headers,
+                timeout=5
+            )
+            
+            if response.status_code != 200:
+                return None
+            
+            data = response.json()
+            models = data.get("data", [])
+            
+            # Filter for GPT models only
+            gpt_models = []
+            model_priority = {
+                "gpt-5": 1000,
+                "gpt-5-turbo": 900,
+                "gpt-5o": 850,
+                "gpt-4o": 800,
+                "gpt-4o-mini": 700,
+                "gpt-4-turbo": 600,
+                "gpt-4": 500,
+                "gpt-3.5-turbo": 400
+            }
+            
+            for model in models:
+                model_id = model.get("id", "")
+                if not model_id.startswith("gpt-"):
+                    continue
+                
+                # Get base model name for priority
+                base_name = model_id.split("-")[0:2]
+                base_key = "-".join(base_name)
+                
+                # Create display name
+                if "gpt-5" in model_id:
+                    display_name = "GPT-5 " + model_id.replace("gpt-5-", "").replace("gpt-5", "Latest").title()
+                elif "gpt-4o" in model_id:
+                    display_name = "GPT-4o " + model_id.replace("gpt-4o-", "").title()
+                elif "gpt-4" in model_id:
+                    display_name = "GPT-4 " + model_id.replace("gpt-4-", "").title()
+                elif "gpt-3.5" in model_id:
+                    display_name = "GPT-3.5 " + model_id.replace("gpt-3.5-", "").title()
+                else:
+                    display_name = model_id.upper()
+                
+                # Get priority
+                priority = model_priority.get(base_key, 0)
+                if priority == 0:
+                    # Try full model id
+                    priority = model_priority.get(model_id, 0)
+                
+                gpt_models.append((priority, display_name, model_id))
+            
+            # Sort by priority (highest first)
+            gpt_models.sort(key=lambda x: x[0], reverse=True)
+            
+            # Return list of (display_name, model_id) tuples
+            result = [(display, model_id) for _, display, model_id in gpt_models]
+            
+            if result:
+                print(f"[OPENAI MODELS] Fetched {len(result)} models from API")
+                return result
+            
+            return None
+            
+        except Exception as e:
+            print(f"[OPENAI MODELS] Failed to fetch models: {e}")
+            return None
     
     def get_values(self) -> Tuple[str, str]:
         """Get name and description - legacy method"""
@@ -2294,51 +2396,217 @@ class PromptEdit(QTextEdit):
         super().keyPressEvent(e)
 
 class VideoCellWidget(QWidget):
-    def __init__(self, video_path: str, parent=None, show_preview: bool = True):
+    """Modern video cell with lazy loading and smooth animations"""
+    _thumbnail_cache = {}  # Static cache for thumbnails
+    
+    def __init__(self, video_path: str, parent=None, show_preview: bool = True, image_path: str = None):
         super().__init__(parent)
         self.video_path = video_path
         self.show_preview = show_preview
+        self.image_path = image_path
+        self.is_playing = False
+        self._loaded = False
 
         if show_preview:
-            # Version có preview (như cũ)
-            self.player = QMediaPlayer(self)
-            self.audio = QAudioOutput(self)
-            self.player.setAudioOutput(self.audio)
-
-            self.view = QVideoWidget(self)
-            self.view.setFixedSize(240, 135)
+            # Modern card with shadow effect
+            self.card = QFrame()
+            self.card.setObjectName("videoCard")
+            self.card.setFixedSize(240, 135)
             
-            self.player.setVideoOutput(self.view)
-            self.player.setSource(Path(video_path).as_uri())
-
-            def _toggle(_e=None):
-                st = self.player.playbackState()
-                self.player.pause() if st == QMediaPlayer.PlayingState else self.player.play()
-            self.view.mousePressEvent = _toggle
+            # Shadow effect will be added after fade-in animation completes
+            
+            self.thumbnail_label = QLabel()
+            self.thumbnail_label.setAlignment(Qt.AlignCenter)
+            self.thumbnail_label.setScaledContents(True)
+            
+            # Modern style with glassmorphism
+            self.card.setStyleSheet("""
+                QFrame#videoCard {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                                stop:0 rgba(255, 255, 255, 0.95),
+                                                stop:1 rgba(248, 250, 252, 0.95));
+                    border: 1px solid rgba(226, 232, 240, 0.8);
+                    border-radius: 12px;
+                }
+                QFrame#videoCard:hover {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                                stop:0 rgba(255, 255, 255, 1),
+                                                stop:1 rgba(241, 245, 249, 1));
+                    border: 1px solid rgba(148, 163, 184, 0.5);
+                }
+            """)
+            
+            # Play overlay (initially hidden)
+            self.play_overlay = QLabel("▶")
+            self.play_overlay.setAlignment(Qt.AlignCenter)
+            self.play_overlay.setStyleSheet("""
+                QLabel {
+                    background: rgba(59, 130, 246, 0.9);
+                    color: white;
+                    font-size: 36px;
+                    font-weight: 700;
+                    border-radius: 50%;
+                    padding: 15px;
+                }
+            """)
+            self.play_overlay.setFixedSize(70, 70)
+            self.play_overlay.hide()
+            
+            # Layout for card
+            card_layout = QVBoxLayout(self.card)
+            card_layout.setContentsMargins(0, 0, 0, 0)
+            card_layout.setSpacing(0)
+            card_layout.addWidget(self.thumbnail_label)
+            
+            # Overlay layout
+            overlay_layout = QVBoxLayout()
+            overlay_layout.setContentsMargins(0, 0, 0, 0)
+            overlay_layout.addStretch()
+            overlay_layout.addWidget(self.play_overlay, 0, Qt.AlignCenter)
+            overlay_layout.addStretch()
+            card_layout.addLayout(overlay_layout)
+            
+            # Lazy load thumbnail (performance optimization)
+            self._load_thumbnail_lazy()
+            
+            # Hover effects
+            self.card.enterEvent = lambda e: self.play_overlay.show()
+            self.card.leaveEvent = lambda e: self.play_overlay.hide()
+            
+            # Click to play
+            def _play_video(_e=None):
+                if not self.is_playing:
+                    self.open_os()
+            
+            self.card.mousePressEvent = _play_video
+            self.card.setCursor(Qt.PointingHandCursor)
 
             lay = QVBoxLayout(self)
-            lay.setContentsMargins(8, 8, 8, 8)
-            lay.addWidget(self.view)
+            lay.setContentsMargins(6, 6, 6, 6)
+            lay.addWidget(self.card)
+            
+            # Fade-in animation using opacity effect (more reliable for embedded widgets)
+            self.opacity_effect = QGraphicsOpacityEffect(self.card)
+            self.opacity_effect.setOpacity(0.0)
+            self.card.setGraphicsEffect(self.opacity_effect)
+            
+            self.fade_in_animation = QPropertyAnimation(self.opacity_effect, b"opacity")
+            self.fade_in_animation.setDuration(300)
+            self.fade_in_animation.setStartValue(0.0)
+            self.fade_in_animation.setEndValue(1.0)
+            self.fade_in_animation.setEasingCurve(QEasingCurve.OutCubic)
+            
+            # After fade-in completes, replace opacity effect with shadow effect
+            def _on_fade_complete():
+                shadow = QGraphicsDropShadowEffect()
+                shadow.setBlurRadius(20)
+                shadow.setColor(QColor(0, 0, 0, 30))
+                shadow.setOffset(0, 4)
+                self.card.setGraphicsEffect(shadow)
+            
+            self.fade_in_animation.finished.connect(_on_fade_complete)
+            
+            # Start fade-in after a short delay
+            QTimer.singleShot(50, self.fade_in_animation.start)
         else:
-            # Version chỉ hiện label (rất nhẹ)
-            label = QLabel("✓ Video Ready")
+            # Compact mode - modern badge
+            label = QLabel("✓ Ready")
             label.setAlignment(Qt.AlignCenter)
             label.setStyleSheet("""
                 QLabel {
-                    background: #dcfce7;
-                    border: 2px solid #86efac;
-                    border-radius: 8px;
-                    padding: 20px;
-                    color: #166534;
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                                stop:0 #10b981, stop:1 #059669);
+                    border: none;
+                    border-radius: 6px;
+                    padding: 8px 16px;
+                    color: white;
                     font-weight: 700;
-                    font-size: 13px;
+                    font-size: 12px;
+                    letter-spacing: 0.5px;
                 }
             """)
-            label.setFixedSize(240, 135)
             
             lay = QVBoxLayout(self)
             lay.setContentsMargins(8, 8, 8, 8)
-            lay.addWidget(label)
+            lay.addWidget(label, 0, Qt.AlignCenter)
+    
+    def _load_thumbnail_lazy(self):
+        """Lazy load thumbnail for performance"""
+        # Check cache first
+        if self.image_path in VideoCellWidget._thumbnail_cache:
+            pixmap = VideoCellWidget._thumbnail_cache[self.image_path]
+            self.thumbnail_label.setPixmap(pixmap)
+            self._loaded = True
+            return
+        
+        # Show loading state
+        self.thumbnail_label.setText("Loading...")
+        self.thumbnail_label.setStyleSheet("""
+            QLabel {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                            stop:0 #f3f4f6, stop:1 #e5e7eb);
+                color: #9ca3af;
+                font-size: 12px;
+                font-weight: 600;
+            }
+        """)
+        
+        # Load in background thread
+        QTimer.singleShot(10, self._do_load_thumbnail)
+    
+    def _do_load_thumbnail(self):
+        """Actually load the thumbnail"""
+        if self.image_path and os.path.exists(self.image_path):
+            try:
+                from PIL import Image
+                from PySide6.QtGui import QImage
+                
+                # Load and resize with high quality
+                pil_img = Image.open(self.image_path)
+                pil_img.thumbnail((240, 135), Image.Resampling.LANCZOS)
+                
+                # Convert to QPixmap
+                if pil_img.mode == "RGBA":
+                    data = pil_img.tobytes("raw", "RGBA")
+                    qimg = QImage(data, pil_img.width, pil_img.height, QImage.Format_RGBA8888)
+                else:
+                    pil_img = pil_img.convert("RGB")
+                    data = pil_img.tobytes("raw", "RGB")
+                    qimg = QImage(data, pil_img.width, pil_img.height, QImage.Format_RGB888)
+                
+                pixmap = QPixmap.fromImage(qimg)
+                
+                # Cache it
+                VideoCellWidget._thumbnail_cache[self.image_path] = pixmap
+                
+                # Set pixmap
+                self.thumbnail_label.setPixmap(pixmap)
+                self.thumbnail_label.setStyleSheet("")
+                self._loaded = True
+                
+                # Trigger fade-in animation if available
+                if hasattr(self, 'fade_in_animation') and not self.fade_in_animation.state() == QPropertyAnimation.Running:
+                    self.fade_in_animation.start()
+                
+            except Exception as e:
+                print(f"[VIDEO CELL] Failed to load thumbnail: {e}")
+                self._show_fallback_icon()
+        else:
+            self._show_fallback_icon()
+    
+    def _show_fallback_icon(self):
+        """Show fallback icon when thumbnail fails"""
+        self.thumbnail_label.setText("🎬\nClick to Play")
+        self.thumbnail_label.setStyleSheet("""
+            QLabel {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                            stop:0 #6366f1, stop:1 #4f46e5);
+                color: white;
+                font-weight: 700;
+                font-size: 14px;
+                border-radius: 10px;
+            }
+        """)
 
     def open_os(self):
         p = self.video_path
@@ -2346,67 +2614,104 @@ class VideoCellWidget(QWidget):
         else: os.system(f'xdg-open "{p}"')
 
     def sizeHint(self):
-        return QSize(256, 151)
+        return QSize(252, 147)
     
     def cleanup(self):
         """Cleanup resources khi widget bị remove"""
-        if hasattr(self, 'player'):
-            try:
-                self.player.stop()
-                self.player.setSource("")
-                self.player.deleteLater()
-            except:
-                pass
-        if hasattr(self, 'audio'):
-            try:
-                self.audio.deleteLater()
-            except:
-                pass
+        # No player resources to clean up anymore (using static thumbnail)
+        pass
 
 class StatusProgress(QWidget):
+    """Modern progress indicator with smooth animations"""
     def __init__(self, parent=None):
         super().__init__(parent)
+        
+        # Main container with modern card design
+        self.card = QFrame()
+        self.card.setObjectName("progressCard")
+        self.card.setStyleSheet("""
+            QFrame#progressCard {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                            stop:0 rgba(255, 255, 255, 0.98),
+                                            stop:1 rgba(249, 250, 251, 0.98));
+                border: 1px solid rgba(229, 231, 235, 0.8);
+                border-radius: 10px;
+            }
+        """)
+        
+        # Percentage label with modern typography
         self.lab_pct = QLabel("0%")
         self.lab_pct.setAlignment(Qt.AlignCenter)
-        self.lab_pct.setStyleSheet("font-weight:800; font-size:14px; color:#111827;")
+        self.lab_pct.setStyleSheet("""
+            QLabel {
+                font-weight: 800;
+                font-size: 18px;
+                color: #111827;
+                letter-spacing: -0.5px;
+                background: transparent;
+            }
+        """)
 
+        # Modern progress bar with gradient
         self.bar = QProgressBar()
         self.bar.setRange(0, 100)
         self.bar.setValue(0)
         self.bar.setTextVisible(False)
-        self.bar.setFixedHeight(14)
-        # ← ĐƠN GIẢN HÓA STYLE (bỏ gradient):
+        self.bar.setFixedHeight(8)
         self.bar.setStyleSheet("""
             QProgressBar {
-                border: 1px solid #d1d5db;
-                background: #f9fafb;
-                border-radius: 8px;
+                border: none;
+                background: rgba(229, 231, 235, 0.5);
+                border-radius: 4px;
             }
             QProgressBar::chunk {
-                border-radius: 8px;
-                background: #3b82f6;  /* ← Màu đơn giản thay vì gradient */
+                border-radius: 4px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                            stop:0 #3b82f6,
+                                            stop:0.5 #2563eb,
+                                            stop:1 #1d4ed8);
             }
         """)
 
+        # Status text with modern styling
         self.lab_text = QLabel("waiting")
         self.lab_text.setAlignment(Qt.AlignCenter)
-        self.lab_text.setStyleSheet("color:#6b7280; font-size:12px;")
+        self.lab_text.setStyleSheet("""
+            QLabel {
+                color: #9ca3af;
+                font-size: 11px;
+                font-weight: 600;
+                letter-spacing: 0.3px;
+                background: transparent;
+            }
+        """)
 
+        # Card layout
+        card_layout = QVBoxLayout(self.card)
+        card_layout.setContentsMargins(12, 10, 12, 10)
+        card_layout.setSpacing(6)
+        card_layout.addWidget(self.lab_pct)
+        card_layout.addWidget(self.bar)
+        card_layout.addWidget(self.lab_text)
+        
+        # Main layout
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(6, 6, 6, 6)
-        lay.setSpacing(4)
-        lay.addWidget(self.lab_pct)
-        lay.addWidget(self.bar)
-        lay.addWidget(self.lab_text)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.addWidget(self.card)
 
-        # NEW: spinner animation
-        self._spin_frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
+        # Spinner animation with modern icons
+        self._spin_frames = ["◐", "◓", "◑", "◒"]
         self._spin_i = 0
         self._spin_timer = QTimer(self)
-        self._spin_timer.setInterval(120)
+        self._spin_timer.setInterval(150)
         self._spin_timer.timeout.connect(self._tick_spinner)
         self._base_text = "waiting"
         self._running = False
+        
+        # Smooth transition animation for progress bar
+        self._progress_animation = QPropertyAnimation(self.bar, b"value")
+        self._progress_animation.setDuration(300)
+        self._progress_animation.setEasingCurve(QEasingCurve.OutCubic)
 
     def _tick_spinner(self):
         self._spin_i = (self._spin_i + 1) % len(self._spin_frames)
@@ -2430,18 +2735,117 @@ class StatusProgress(QWidget):
 
     def set_progress(self, pct: int, text: str):
         pct = max(0, min(100, int(pct)))
-        self.bar.setValue(pct)
-        self.lab_pct.setText(f"{pct}%")
+        
+        # Smooth animation for progress bar
+        if hasattr(self, '_progress_animation'):
+            self._progress_animation.setStartValue(self.bar.value())
+            self._progress_animation.setEndValue(pct)
+            self._progress_animation.start()
+        else:
+            self.bar.setValue(pct)
+        
+        # Store status for internal use
         self._base_text = text or ""
-
-        # tô màu nhanh theo trạng thái (dùng objectName)
+        
+        # Status display - ONLY show percentage with modern styling
         t = (text or "").lower()
         if "failed" in t:
-            self.lab_pct.setStyleSheet("font-weight:800; font-size:14px; color:#ef4444;")
+            self.lab_pct.setText(f"{pct}%")
+            self.lab_pct.setStyleSheet("""
+                QLabel {
+                    font-weight: 800;
+                    font-size: 18px;
+                    color: #ef4444;
+                    letter-spacing: -0.5px;
+                    background: transparent;
+                }
+            """)
+            # Update progress bar color for failed
+            self.bar.setStyleSheet("""
+                QProgressBar {
+                    border: none;
+                    background: rgba(229, 231, 235, 0.5);
+                    border-radius: 4px;
+                }
+                QProgressBar::chunk {
+                    border-radius: 4px;
+                    background: #ef4444;
+                }
+            """)
         elif "saved" in t or pct == 100:
-            self.lab_pct.setStyleSheet("font-weight:800; font-size:14px; color:#10b981;")
+            self.lab_pct.setText("100%")
+            self.lab_pct.setStyleSheet("""
+                QLabel {
+                    font-weight: 800;
+                    font-size: 18px;
+                    color: #10b981;
+                    letter-spacing: -0.5px;
+                    background: transparent;
+                }
+            """)
+            # Update progress bar color for success
+            self.bar.setStyleSheet("""
+                QProgressBar {
+                    border: none;
+                    background: rgba(229, 231, 235, 0.5);
+                    border-radius: 4px;
+                }
+                QProgressBar::chunk {
+                    border-radius: 4px;
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                                stop:0 #10b981,
+                                                stop:1 #059669);
+                }
+            """)
+        elif "queued" in t:
+            self.lab_pct.setText("0%")
+            self.lab_pct.setStyleSheet("""
+                QLabel {
+                    font-weight: 800;
+                    font-size: 18px;
+                    color: #f59e0b;
+                    letter-spacing: -0.5px;
+                    background: transparent;
+                }
+            """)
+            # Update progress bar color for queued
+            self.bar.setStyleSheet("""
+                QProgressBar {
+                    border: none;
+                    background: rgba(229, 231, 235, 0.5);
+                    border-radius: 4px;
+                }
+                QProgressBar::chunk {
+                    border-radius: 4px;
+                    background: #f59e0b;
+                }
+            """)
         else:
-            self.lab_pct.setStyleSheet("font-weight:800; font-size:14px; color:#111827;")
+            self.lab_pct.setText(f"{pct}%")
+            self.lab_pct.setStyleSheet("""
+                QLabel {
+                    font-weight: 800;
+                    font-size: 18px;
+                    color: #111827;
+                    letter-spacing: -0.5px;
+                    background: transparent;
+                }
+            """)
+            # Default blue gradient
+            self.bar.setStyleSheet("""
+                QProgressBar {
+                    border: none;
+                    background: rgba(229, 231, 235, 0.5);
+                    border-radius: 4px;
+                }
+                QProgressBar::chunk {
+                    border-radius: 4px;
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                                stop:0 #3b82f6,
+                                                stop:0.5 #2563eb,
+                                                stop:1 #1d4ed8);
+                }
+            """)
 
         self.set_running(0 < pct < 100 and self._base_text.lower() not in ("queued", "failed", "saved"))
 
@@ -4693,7 +5097,12 @@ class MainWindow(QMainWindow):
         """Image-to-Video table"""
         show_preview = not getattr(self, "chk_no_preview", None) or not self.chk_no_preview.isChecked()
         
-        vw = VideoCellWidget(video_path, self, show_preview=show_preview)
+        # Get image path from image_prompts
+        image_path = None
+        if 0 <= row_idx < len(self.image_prompts):
+            image_path = self.image_prompts[row_idx].start_image
+        
+        vw = VideoCellWidget(video_path, self, show_preview=show_preview, image_path=image_path)
         self.tbl_img.setCellWidget(row_idx, 5, vw)
         
         h = 150 if show_preview else 60
@@ -6394,58 +6803,79 @@ class MainWindow(QMainWindow):
     def _refresh_image_table(self):
         """
         Refresh Image-to-Video table với cleanup đầy đủ
+        OPTIMIZED: Batch rendering, progressive loading, memory management
         """
         # ========================================
-        # BƯỚC 1: CLEANUP TẤT CẢ WIDGETS CŨ
+        # BƯỚC 1: CLEANUP TẤT CẢ WIDGETS CŨ (Batch cleanup)
         # ========================================
-        for row in range(self.tbl_img.rowCount()):
+        total_rows = self.tbl_img.rowCount()
+        for row in range(total_rows):
             self._cleanup_row_widgets(self.tbl_img, row)
         
         # ========================================
-        # BƯỚC 2: CLEAR TABLE
+        # BƯỚC 2: CLEAR TABLE (Performance optimized)
         # ========================================
-        self.tbl_img.setUpdatesEnabled(False)  # Tắt update để nhanh hơn
-        self.tbl_img.setSortingEnabled(False)
+        self.tbl_img.setUpdatesEnabled(False)  # Disable updates for performance
+        self.tbl_img.setSortingEnabled(False)  # Disable sorting
         self.tbl_img.clearContents()
         self.tbl_img.setRowCount(0)
         
+        # Performance: Batch size for progressive rendering
+        BATCH_SIZE = 20  # Render 20 rows at a time
+        total_prompts = len(self.image_prompts)
+        
         # ========================================
-        # BƯỚC 3: RENDER LẠI ROWS
+        # BƯỚC 3: RENDER LẠI ROWS (Progressive + Batch)
         # ========================================
         try:
+            # Pre-allocate rows for better performance
+            if total_prompts > 0:
+                self.tbl_img.setRowCount(total_prompts)
+            
             for i, ipr in enumerate(self.image_prompts, start=1):
-                r = self.tbl_img.rowCount()
-                self.tbl_img.insertRow(r)
+                r = i - 1  # Row index (0-based)
                 
-                # Select checkbox
+                # Select checkbox (lightweight)
                 w = QWidget()
                 box = QCheckBox()
                 box.setChecked(True)
                 lay = QHBoxLayout(w)
-                lay.setContentsMargins(8, 0, 8, 0)
+                lay.setContentsMargins(6, 0, 6, 0)
                 lay.addWidget(box)
                 lay.addStretch(1)
                 self.tbl_img.setCellWidget(r, 0, w)
                 w._cb = box
                 
-                # STT
+                # STT (lightweight, non-editable)
                 it_idx = QTableWidgetItem(str(i))
                 it_idx.setTextAlignment(Qt.AlignCenter)
+                it_idx.setFlags(it_idx.flags() & ~Qt.ItemIsEditable)
                 self.tbl_img.setItem(r, 1, it_idx)
                 
-                # Prompt
-                self.tbl_img.setItem(r, 2, QTableWidgetItem(ipr.prompt))
+                # Prompt (non-editable for performance)
+                prompt_item = QTableWidgetItem(ipr.prompt)
+                prompt_item.setFlags(prompt_item.flags() & ~Qt.ItemIsEditable)
+                self.tbl_img.setItem(r, 2, prompt_item)
                 
-                # Start Image preview (col 3)
-                self._set_img_preview_cell(r, 3, ipr.start_image)
-
+                # Start Image preview (col 3) - Progressive loading
+                if i <= BATCH_SIZE:
+                    # First batch: render immediately
+                    self._set_img_preview_cell(r, 3, ipr.start_image)
+                else:
+                    # Later batches: lazy load with delay
+                    delay_ms = 50 * (i // BATCH_SIZE)
+                    QTimer.singleShot(delay_ms, lambda row=r, img=ipr.start_image: self._set_img_preview_cell(row, 3, img))
                 
                 # Status (progress widget) at col 4
                 self._ensure_img_progress_cell(r)
                 
-                # Video + Open
+                # Video + Open - Progressive loading for performance
                 if ipr.video and os.path.exists(ipr.video):
-                    self._set_img_video_cell(r, ipr.video)
+                    if i <= BATCH_SIZE:
+                        self._set_img_video_cell(r, ipr.video)
+                    else:
+                        delay_ms = 50 * (i // BATCH_SIZE)
+                        QTimer.singleShot(delay_ms, lambda row=r, vid=ipr.video: self._set_img_video_cell(row, vid))
                 else:
                     self.tbl_img.setItem(r, 5, QTableWidgetItem(""))
                     self.tbl_img.setItem(r, 6, QTableWidgetItem(""))
@@ -6737,9 +7167,71 @@ class MainWindow(QMainWindow):
             return
         
         if self.img_running_jobs <= 0:
+            # Check for queued jobs before showing Done message
+            self._auto_start_queued_img_jobs()
+    
+    def _auto_start_queued_img_jobs(self):
+        """Automatically start next queued image-to-video jobs after current batch completes"""
+        # Find all rows with "Queued" status
+        queued_rows = []
+        for r, ipr in enumerate(self.image_prompts):
+            # Check if row has checkbox and is checked
+            w = self.tbl_img.cellWidget(r, 0)
+            if not (getattr(w, "_cb", None) and w._cb.isChecked()):
+                continue
+            
+            # Check status from progress cell
+            sp = self._ensure_img_progress_cell(r)
+            if hasattr(sp, 'label') and sp.label:
+                status_text = sp.label.text().strip()
+                if status_text == "Queued":
+                    queued_rows.append(r)
+        
+        if queued_rows:
+            conc = self.current_concurrency()
+            rows_to_start = queued_rows[:conc]
+            print(f"[AUTO START IMG] Found {len(queued_rows)} queued jobs, starting {len(rows_to_start)} jobs (concurrency: {conc})...")
+            
+            # Get necessary params
+            live = [a for a in self.accounts if a.status.lower()=="live"]
+            if not live:
+                print("[AUTO START IMG] No LIVE account available, stopping auto-start")
+                self.btn_img_generate.setEnabled(True)
+                self.btn_img_stop.setEnabled(False)
+                QMessageBox.information(self, "Done", "All running jobs finished.\n\nRemaining jobs need a LIVE account.")
+                return
+            
+            cookie_path = live[0].path
+            out_dir = Path(self.edit_outdir.text() or str(APP_DIR / "outputs"))
+            model = self.current_model()
+            outputs = self.current_outputs()
+            
+            # Start new batch
+            for r in rows_to_start:
+                ipr = self.image_prompts[r]
+                name_base = f"{r+1:03d}_{_slugify(ipr.prompt, 28)}"
+                
+                worker = ImageVideoWorker(
+                    r, cookie_path, ipr.start_image,
+                    ipr.prompt, model, outputs, out_dir, name_base,
+                    timeout=self.current_img_timeout(),
+                    retries=self.current_retries()
+                )
+                
+                worker.signals.progress.connect(self._on_img_progress)
+                worker.signals.done.connect(self._on_img_done)
+                worker.signals.finished.connect(self._on_img_finished)
+                
+                self.img_running_jobs += 1
+                self.thread_pool.start(worker)
+            
+            print(f"[AUTO START IMG] Started {len(rows_to_start)} new jobs")
+        else:
+            # No more queued jobs
+            print("[AUTO START IMG] No queued jobs found - all jobs completed!")
             self.btn_img_generate.setEnabled(True)
             self.btn_img_stop.setEnabled(False)
-            QMessageBox.information(self, "Done", "All image to video jobs finished.")
+            QMessageBox.information(self, "✅ Done", "All image to video jobs finished.")
         
     def _make_field_cell(self, label_text: str, widget: QWidget, label_w: int = 160) -> QFrame:
         cell = QFrame(); cell.setObjectName("fieldCell")

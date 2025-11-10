@@ -129,10 +129,12 @@ Script:
 {script_content}"""
 
     try:
-        # Limit script length for summary (use first 12000 chars if too long)
-        script_for_summary = script[:12000] if len(script) > 12000 else script
-        if len(script) > 12000:
-            script_for_summary += "\n\n[Script continues...]"
+        # Limit script length for summary (use first 30000 chars if too long)
+        # Summary focuses on extracting character details and main plot, doesn't need full script
+        script_for_summary = script[:30000] if len(script) > 30000 else script
+        if len(script) > 30000:
+            script_for_summary += f"\n\n[Script continues... Total length: {len(script)} chars]"
+            print(f"[SCRIPT SUMMARY] Script is very long ({len(script)} chars), using first 30000 chars for summary")
         
         if provider == "Groq":
             import requests
@@ -207,14 +209,19 @@ def extract_character_details_from_script(script: str, provider: str, model: str
     
     # Step 1: Summarize script first (for all scripts to get main parts)
     script_summary = None
-    if len(script) > 5000:
+    if len(script) > 10000:
         print(f"[CHARACTER EXTRACTION] Script is long ({len(script)} chars), summarizing first...")
         script_summary = summarize_script(script, provider, model, api_key)
-        # Use summary + key parts of original script for character extraction
-        script_for_extraction = f"SCRIPT SUMMARY:\n{script_summary}\n\nKEY SCRIPT EXCERPTS (for detailed character descriptions):\n{script[:6000]}"
+        # Use summary + more of original script for detailed character extraction
+        # Take first 20000 chars to capture character descriptions throughout script
+        script_excerpt = script[:20000]
+        if len(script) > 20000:
+            script_excerpt += f"\n\n[Script continues for {len(script) - 20000} more chars...]"
+        script_for_extraction = f"SCRIPT SUMMARY:\n{script_summary}\n\nSCRIPT EXCERPTS (for detailed character descriptions):\n{script_excerpt}"
+        print(f"[CHARACTER EXTRACTION] Using summary + first 20000 chars for character extraction")
     else:
-        # For short scripts, still create a brief summary for context
-        print(f"[CHARACTER EXTRACTION] Script is short ({len(script)} chars), using full script")
+        # For shorter scripts, use full script
+        print(f"[CHARACTER EXTRACTION] Script length ({len(script)} chars), using full script")
         script_for_extraction = script
         # Will extract summary from character extraction response
     
@@ -791,14 +798,23 @@ def analyze_script_with_groq(script: str, num_parts: int, groq_api_key: str, cus
 
     # Use script summary if available and script is very long, otherwise use full script
     script_to_analyze = script
-    if script_summary and len(script) > 10000:
-        print(f"[SCRIPT] Script is long ({len(script)} chars), using summary + full script for context")
-        script_to_analyze = f"SCRIPT SUMMARY:\n{script_summary}\n\nFULL SCRIPT (for detailed scene analysis):\n{script}"
+    max_script_length = 30000  # Groq can handle longer scripts
+    
+    if script_summary and len(script) > 20000:
+        # Use summary + partial script for very long scripts
+        if len(script) > max_script_length:
+            print(f"[GROQ] Script is very long ({len(script)} chars), using summary + first {max_script_length} chars")
+            script_to_analyze = f"SCRIPT SUMMARY (full story overview):\n{script_summary}\n\nSCRIPT (first {max_script_length} chars for detailed analysis):\n{script[:max_script_length]}\n\n[Script continues... Total: {len(script)} chars. Use summary for full story context.]"
+        else:
+            print(f"[GROQ] Using summary + full script ({len(script)} chars)")
+            script_to_analyze = f"SCRIPT SUMMARY:\n{script_summary}\n\nFULL SCRIPT:\n{script}"
     else:
-        # If script is still too long, truncate but keep character context
-        if len(script_to_analyze) > 15000:
-            print(f"[SCRIPT] Script is very long ({len(script)} chars), truncating to 15000 chars")
-            script_to_analyze = script_to_analyze[:15000] + "\n\n[Script continues...]"
+        # No summary or script not too long - use full script if possible
+        if len(script_to_analyze) > max_script_length:
+            print(f"[SCRIPT] Script is VERY long ({len(script)} chars), truncating to {max_script_length} chars")
+            script_to_analyze = script_to_analyze[:max_script_length] + f"\n\n[Script continues... Total length: {len(script)} chars]"
+        else:
+            print(f"[SCRIPT] Using full script ({len(script)} chars)")
 
     user_prompt = f"Analyze this script and split it into EXACTLY {num_parts} parts. Create one English image generation prompt for each part following the rules above. Use the CHARACTER DETAILS section to ensure absolute consistency across all prompts. OUTPUT IN ENGLISH ONLY:\n\n{script_to_analyze}"
     
@@ -815,7 +831,7 @@ def analyze_script_with_groq(script: str, num_parts: int, groq_api_key: str, cus
             {"role": "user", "content": user_prompt}
         ],
         "temperature": 0.7,
-        "max_tokens": 6000  # Groq's safe limit (much lower than OpenAI/Gemini)
+        "max_tokens": 60000  # Groq's limit (x10 from 6000 for higher output capacity)
     }
     
     try:
@@ -923,14 +939,31 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
     
     # Use script summary if available and script is very long, otherwise use full script
     script_to_analyze = script
-    if script_summary and len(script) > 10000:
-        print(f"[SCRIPT] Script is long ({len(script)} chars), using summary + full script for context")
-        script_to_analyze = f"SCRIPT SUMMARY:\n{script_summary}\n\nFULL SCRIPT (for detailed scene analysis):\n{script}"
+    
+    # GPT-5 has large context window, can handle longer scripts
+    # Only truncate if EXTREMELY long (>50k chars) to avoid timeout
+    max_script_length = 50000 if "gpt-5" in model.lower() else 30000
+    
+    if script_summary and len(script) > 20000:
+        # If we have summary, use it for context but keep more of the script
+        if "gpt-5" in model.lower():
+            # GPT-5: Use summary + more script content (up to 50k chars)
+            if len(script) > max_script_length:
+                print(f"[GPT-5] Script is very long ({len(script)} chars), using summary + first {max_script_length} chars")
+                script_to_analyze = f"SCRIPT SUMMARY (full story overview):\n{script_summary}\n\nSCRIPT (first {max_script_length} chars for detailed analysis):\n{script[:max_script_length]}\n\n[Script continues... Total: {len(script)} chars. Use summary for full story context.]"
+            else:
+                print(f"[GPT-5] Using summary + full script ({len(script)} chars)")
+                script_to_analyze = f"SCRIPT SUMMARY:\n{script_summary}\n\nFULL SCRIPT:\n{script}"
+        else:
+            print(f"[SCRIPT] Script is long ({len(script)} chars), using summary + full script for context")
+            script_to_analyze = f"SCRIPT SUMMARY:\n{script_summary}\n\nFULL SCRIPT (for detailed scene analysis):\n{script}"
     else:
-        # If script is still too long, truncate but keep character context
-        if len(script_to_analyze) > 15000:
-            print(f"[SCRIPT] Script is very long ({len(script)} chars), truncating to 15000 chars")
-            script_to_analyze = script_to_analyze[:15000] + "\n\n[Script continues...]"
+        # No summary or script not too long - use full script if possible
+        if len(script_to_analyze) > max_script_length:
+            print(f"[SCRIPT] Script is VERY long ({len(script)} chars), truncating to {max_script_length} chars")
+            script_to_analyze = script_to_analyze[:max_script_length] + f"\n\n[Script continues... Total length: {len(script)} chars]"
+        else:
+            print(f"[SCRIPT] Using full script ({len(script)} chars)")
     
     # OPTIMIZE FOR OPENAI PROMPT CACHING:
     # - System message contains ALL static content (instructions + character details) - will be cached
@@ -947,26 +980,327 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
         "Content-Type": "application/json"
     }
     
-    # Structure optimized for OpenAI Prompt Caching:
-    # - system: Instructions + character details (cached, saves ~50% cost)
-    # - user: Script content only (not cached, changes per script)
+    # Validate and normalize model name
+    valid_models = [
+        "gpt-5", "gpt-5-turbo", "gpt-5o",  # GPT-5 models
+        "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4-turbo-preview", 
+        "gpt-4", "gpt-3.5-turbo"
+    ]
+    
+    # Normalize model name (case-insensitive, remove spaces)
+    model_normalized = model.strip().lower().replace(" ", "-")
+    
+    # Check if model is valid or try to match
+    model_to_use = model
+    if model_normalized not in [m.lower() for m in valid_models]:
+        # Try to find closest match
+        if "gpt-5" in model_normalized:
+            model_to_use = "gpt-5"  # Default GPT-5
+            print(f"[OPENAI] Using GPT-5 model (normalized from '{model}')")
+        elif "gpt-4o" in model_normalized:
+            model_to_use = "gpt-4o"
+            print(f"[OPENAI] Using gpt-4o model (normalized from '{model}')")
+        else:
+            # Fallback to gpt-4o-mini if model not recognized
+            print(f"[WARNING] Model '{model}' may not be valid. Using 'gpt-4o-mini' as fallback.")
+            model_to_use = "gpt-4o-mini"
+    else:
+        # Find exact match
+        for valid_model in valid_models:
+            if valid_model.lower() == model_normalized:
+                model_to_use = valid_model
+                break
+    
+    # Adjust max_tokens based on model capabilities (x10 for higher output capacity)
+    if "gpt-5" in model_to_use.lower():
+        max_tokens = 160000  # GPT-5 supports higher limits (x10 from 16000)
+    elif "gpt-4o" in model_to_use.lower() or "gpt-4-turbo" in model_to_use.lower():
+        max_tokens = 80000  # x10 from 8000
+    elif "gpt-4" in model_to_use.lower():
+        max_tokens = 80000  # x10 from 8000
+    else:  # gpt-3.5-turbo
+        max_tokens = 40000  # x10 from 4000
+    
+    print(f"[OPENAI] Using model: {model_to_use}, max_tokens: {max_tokens}")
+    
+    # OpenAI Model Parameter Support Matrix
+    # o1/o3 series: Use max_completion_tokens, no temperature control
+    # GPT-5 series: May not be available yet, fallback to gpt-4o
+    # GPT-4 series: Standard parameters supported
+    
+    o1_models = ["o1", "o1-mini", "o1-preview", "o3", "o3-mini"]
+    reasoning_models = o1_models  # Models with reasoning capabilities
+    gpt5_models = ["gpt-5", "gpt-5-turbo", "gpt-5o"]
+    
+    is_o1_model = any(model_to_use.lower().startswith(m.lower()) for m in o1_models)
+    is_gpt5_model = any(model_to_use.lower().startswith(m.lower()) for m in gpt5_models)
+    
+    # Structure optimized for OpenAI Prompt Caching (GPT-4o and newer):
+    # - Static content at the START = cached by OpenAI (50% cost reduction)
+    # - Dynamic content at the END = not cached
+    # Reference: https://platform.openai.com/docs/guides/prompt-caching
     payload = {
-        "model": model,
+        "model": model_to_use,
         "messages": [
             {"role": "system", "content": system_prompt},  # STATIC - cached by OpenAI
             {"role": "user", "content": user_prompt}       # DYNAMIC - script content
-        ],
-        "temperature": 0.7,
-        "max_tokens": 8000  # Increased from 4000 to support more prompts
+        ]
     }
     
+    # Add temperature (not supported by o1 and GPT-5 models)
+    if not is_o1_model and not is_gpt5_model:
+        payload["temperature"] = 0.7
+        print(f"[OPENAI] Using temperature: 0.7")
+    else:
+        print(f"[OPENAI] Model '{model_to_use}' does not support custom temperature (using default).")
+    
+    # Add max_tokens or max_completion_tokens based on model
+    if is_o1_model:
+        # o1 models use max_completion_tokens for output length
+        payload["max_completion_tokens"] = max_tokens
+        print(f"[OPENAI] Using max_completion_tokens: {max_tokens} (reasoning model)")
+    elif not is_gpt5_model:
+        # Standard models use max_tokens
+        payload["max_tokens"] = max_tokens
+        print(f"[OPENAI] Using max_tokens: {max_tokens}")
+    else:
+        # GPT-5 models may not support max_tokens - omit it entirely
+        print(f"[OPENAI] Model '{model_to_use}' (GPT-5) - omitting max_tokens parameter.")
+    
+    # Set timeout based on model and prompt size (GPT-5 with long scripts needs more time)
+    if is_gpt5_model:
+        # GPT-5: Longer timeout for processing large scripts
+        if len(user_prompt) > 30000:
+            request_timeout = 480  # 8 minutes for very long prompts
+        elif len(user_prompt) > 15000:
+            request_timeout = 360  # 6 minutes for long prompts
+        else:
+            request_timeout = 240  # 4 minutes for normal prompts
+    else:
+        request_timeout = 180  # 3 minutes for other models
+    
+    # Log payload details for debugging
+    print(f"[OPENAI] ========== REQUEST DETAILS ==========")
+    print(f"[OPENAI] Model: {model_to_use}")
+    print(f"[OPENAI] Timeout: {request_timeout}s")
+    print(f"[OPENAI] Payload keys: {list(payload.keys())}")
+    if 'temperature' in payload:
+        print(f"[OPENAI] Temperature: {payload['temperature']}")
+    if 'max_tokens' in payload:
+        print(f"[OPENAI] Max tokens: {payload['max_tokens']}")
+    if 'max_completion_tokens' in payload:
+        print(f"[OPENAI] Max completion tokens: {payload['max_completion_tokens']}")
+    print(f"[OPENAI] System prompt length: {len(system_prompt)} chars")
+    print(f"[OPENAI] User prompt length: {len(user_prompt)} chars")
+    print(f"[OPENAI] ======================================")
+    
     try:
+        print(f"[OPENAI] Sending request to API...")
         response = requests.post(
             "https://api.openai.com/v1/chat/completions",
             headers=headers,
             json=payload,
-            timeout=120
+            timeout=request_timeout
         )
+        
+        # Enhanced error handling with detailed logging and retry logic
+        if response.status_code != 200:
+            error_detail = response.text
+            print(f"[OPENAI ERROR] Status Code: {response.status_code}")
+            print(f"[OPENAI ERROR] Response: {error_detail}")
+            
+            try:
+                error_json = response.json()
+                if "error" in error_json:
+                    error_msg = error_json["error"]
+                    error_type = error_msg.get("type", "Unknown")
+                    error_message = error_msg.get("message", "Unknown error")
+                    error_param = error_msg.get("param")
+                    error_code = error_msg.get("code")
+                    
+                    print(f"[OPENAI ERROR] Type: {error_type}")
+                    print(f"[OPENAI ERROR] Message: {error_message}")
+                    if error_param:
+                        print(f"[OPENAI ERROR] Parameter: {error_param}")
+                    if error_code:
+                        print(f"[OPENAI ERROR] Code: {error_code}")
+                    
+                    # Handle unsupported_value for temperature (MUST BE FIRST)
+                    if error_code == "unsupported_value" and error_param == "temperature":
+                        print(f"[OPENAI ERROR] Model '{model_to_use}' does not support custom temperature.")
+                        # Retry without temperature parameter
+                        payload.pop("temperature", None)
+                        print(f"[OPENAI] Retrying without temperature parameter (using model default)...")
+                        
+                        try:
+                            response = requests.post(
+                                "https://api.openai.com/v1/chat/completions",
+                                headers=headers,
+                                json=payload,
+                                timeout=request_timeout
+                            )
+                            if response.status_code == 200:
+                                print(f"[OPENAI] ✅ Success after removing temperature parameter")
+                            else:
+                                raise requests.exceptions.HTTPError(f"Status {response.status_code}", response=response)
+                        except (requests.exceptions.Timeout, requests.exceptions.ReadTimeout) as timeout_error:
+                            print(f"[OPENAI ERROR] Request timed out after removing temperature: {timeout_error}")
+                            # Timeout with GPT-5/o1 models - fallback to gpt-4o immediately
+                            if any(m in model_to_use.lower() for m in ["gpt-5", "o1", "o3"]):
+                                print(f"[OPENAI] Model '{model_to_use}' is timing out. Falling back to gpt-4o...")
+                                payload = {
+                                    "model": "gpt-4o",
+                                    "messages": payload["messages"],
+                                    "temperature": 0.7,
+                                    "max_tokens": 80000
+                                }
+                                print(f"[OPENAI] Retrying with model: gpt-4o")
+                                response = requests.post(
+                                    "https://api.openai.com/v1/chat/completions",
+                                    headers=headers,
+                                    json=payload,
+                                    timeout=180
+                                )
+                                if response.status_code == 200:
+                                    print(f"[OPENAI] ✅ Success with fallback model: gpt-4o")
+                                else:
+                                    response.raise_for_status()
+                            else:
+                                raise
+                        except requests.exceptions.HTTPError:
+                            # Still failed, try fallback to gpt-4o
+                            if any(m in model_to_use.lower() for m in ["gpt-5", "o1", "o3"]):
+                                print(f"[OPENAI] Still failed. Falling back to gpt-4o...")
+                                payload = {
+                                    "model": "gpt-4o",
+                                    "messages": payload["messages"],
+                                    "temperature": 0.7,
+                                    "max_tokens": 80000
+                                }
+                                print(f"[OPENAI] Retrying with model: gpt-4o")
+                                response = requests.post(
+                                    "https://api.openai.com/v1/chat/completions",
+                                    headers=headers,
+                                    json=payload,
+                                    timeout=180
+                                )
+                                if response.status_code == 200:
+                                    print(f"[OPENAI] ✅ Success with fallback model: gpt-4o")
+                                else:
+                                    response.raise_for_status()
+                            else:
+                                raise
+                    
+                    # Handle unsupported_parameter for max_tokens or max_completion_tokens
+                    elif error_code == "unsupported_parameter" and error_param in ["max_tokens", "max_completion_tokens"]:
+                        print(f"[OPENAI ERROR] Model '{model_to_use}' does not support {error_param} parameter.")
+                        
+                        # Try alternative parameter or remove both
+                        if error_param == "max_tokens" and "max_tokens" in payload:
+                            # Try max_completion_tokens for reasoning models
+                            if any(m in model_to_use.lower() for m in ["o1", "o3"]):
+                                payload.pop("max_tokens", None)
+                                payload["max_completion_tokens"] = max_tokens
+                                print(f"[OPENAI] Retrying with max_completion_tokens instead...")
+                            else:
+                                # Just remove max_tokens
+                                payload.pop("max_tokens", None)
+                                print(f"[OPENAI] Retrying without max_tokens parameter...")
+                        elif error_param == "max_completion_tokens" and "max_completion_tokens" in payload:
+                            # Try max_tokens for standard models
+                            payload.pop("max_completion_tokens", None)
+                            payload["max_tokens"] = max_tokens
+                            print(f"[OPENAI] Retrying with max_tokens instead...")
+                        else:
+                            # Remove both if present
+                            payload.pop("max_tokens", None)
+                            payload.pop("max_completion_tokens", None)
+                            print(f"[OPENAI] Retrying without token limit parameters...")
+                        
+                        response = requests.post(
+                            "https://api.openai.com/v1/chat/completions",
+                            headers=headers,
+                            json=payload,
+                            timeout=request_timeout
+                        )
+                        if response.status_code == 200:
+                            print(f"[OPENAI] ✅ Success after adjusting token parameters")
+                        else:
+                            response.raise_for_status()
+                    
+                    # Handle model not found - fallback to gpt-4o
+                    elif ("model" in error_message.lower() or error_param == "model" or 
+                          error_code in ["model_not_found", "invalid_model"] or
+                          "not found" in error_message.lower()):
+                        print(f"[OPENAI ERROR] Model '{model_to_use}' may be invalid or not available.")
+                        # Fallback to gpt-4o for unavailable models
+                        if any(m in model_to_use.lower() for m in ["gpt-5", "o1", "o3"]):
+                            print(f"[OPENAI ERROR] Model '{model_to_use}' not available. Falling back to gpt-4o...")
+                            # Rebuild payload for gpt-4o with proper parameters
+                            payload = {
+                                "model": "gpt-4o",
+                                "messages": payload["messages"],
+                                "temperature": 0.7,
+                                "max_tokens": 80000
+                            }
+                            print(f"[OPENAI] Retrying with model: gpt-4o")
+                            response = requests.post(
+                                "https://api.openai.com/v1/chat/completions",
+                                headers=headers,
+                                json=payload,
+                                timeout=180
+                            )
+                            if response.status_code == 200:
+                                print(f"[OPENAI] ✅ Success with fallback model: gpt-4o")
+                            else:
+                                response.raise_for_status()
+                        else:
+                            print(f"[OPENAI ERROR] Try one of: gpt-4o, gpt-4o-mini, gpt-4-turbo-preview")
+                            response.raise_for_status()
+                    
+                    # Handle max_tokens too high
+                    elif "max_tokens" in error_message.lower() and error_param == "max_tokens":
+                        print(f"[OPENAI ERROR] max_tokens ({max_tokens}) may be too high for this model.")
+                        # Try with reduced max_tokens
+                        reduced_max_tokens = min(max_tokens // 2, 8000)
+                        payload["max_tokens"] = reduced_max_tokens
+                        print(f"[OPENAI] Retrying with reduced max_tokens: {reduced_max_tokens}")
+                        response = requests.post(
+                            "https://api.openai.com/v1/chat/completions",
+                            headers=headers,
+                            json=payload,
+                            timeout=request_timeout
+                        )
+                        if response.status_code == 200:
+                            print(f"[OPENAI] ✅ Success with reduced max_tokens: {reduced_max_tokens}")
+                        else:
+                            response.raise_for_status()
+                    
+                    # Handle rate limit
+                    elif "rate limit" in error_message.lower():
+                        print(f"[OPENAI ERROR] Rate limit exceeded. Please wait and try again.")
+                        response.raise_for_status()
+                    
+                    # Handle invalid API key
+                    elif "invalid_api_key" in error_message.lower() or "authentication" in error_message.lower():
+                        print(f"[OPENAI ERROR] API key is invalid or expired. Please check your API key.")
+                        response.raise_for_status()
+                    
+                    # Other errors - raise normally
+                    else:
+                        response.raise_for_status()
+                        
+            except Exception as parse_error:
+                print(f"[OPENAI ERROR] Could not parse error response: {parse_error}")
+                # Check if parse_error is actually a timeout or connection error
+                if isinstance(parse_error, (requests.exceptions.Timeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError)):
+                    # This is a timeout/connection error, not a parse error
+                    print(f"[OPENAI ERROR] Connection/timeout issue detected: {type(parse_error).__name__}")
+                    raise parse_error
+                else:
+                    # Normal error, safe to call raise_for_status
+                    response.raise_for_status()
+        
         response.raise_for_status()
         
         result = response.json()
@@ -1005,6 +1339,53 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
             final_prompts = final_prompts[:num_parts]
         
         return final_prompts
+    
+    except (requests.exceptions.Timeout, requests.exceptions.ReadTimeout) as timeout_error:
+        print(f"[OPENAI ERROR] Request timed out with model '{model_to_use}': {timeout_error}")
+        # If GPT-5/o1/o3 timed out, fallback to gpt-4o and retry
+        if any(m in model_to_use.lower() for m in ["gpt-5", "o1", "o3"]):
+            print(f"[OPENAI] Model '{model_to_use}' timed out. Falling back to gpt-4o...")
+            try:
+                # Rebuild payload for gpt-4o
+                fallback_payload = {
+                    "model": "gpt-4o",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 80000
+                }
+                print(f"[OPENAI] Retrying with model: gpt-4o (timeout fallback)")
+                response = requests.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers=headers,
+                    json=fallback_payload,
+                    timeout=180
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                content = result["choices"][0]["message"]["content"].strip()
+                print(f"[OPENAI] ✅ Success with fallback model: gpt-4o")
+                print(f"[OPENAI AI RAW RESPONSE]:\n{content}\n{'='*80}")
+                
+                final_prompts = parse_prompts_from_response(content)
+                print(f"[OPENAI DEBUG] Parser extracted {len(final_prompts)} prompts from response")
+                
+                if not final_prompts:
+                    print("[WARNING] No prompts extracted from fallback model")
+                    return []
+                
+                if len(final_prompts) > num_parts:
+                    print(f"[LIMIT] AI returned {len(final_prompts)} prompts, limiting to {num_parts}")
+                    final_prompts = final_prompts[:num_parts]
+                
+                return final_prompts
+            except Exception as fallback_error:
+                raise Exception(f"OpenAI API Error (timeout + fallback failed): {str(fallback_error)}")
+        else:
+            raise Exception(f"OpenAI API Error (timeout): {str(timeout_error)}")
     
     except Exception as e:
         raise Exception(f"OpenAI API Error: {str(e)}")
@@ -1074,14 +1455,23 @@ def analyze_script_with_gemini(script: str, num_parts: int, gemini_api_key: str,
     
     # Use script summary if available and script is very long, otherwise use full script
     script_to_analyze = script
-    if script_summary and len(script) > 10000:
-        print(f"[SCRIPT] Script is long ({len(script)} chars), using summary + full script for context")
-        script_to_analyze = f"SCRIPT SUMMARY:\n{script_summary}\n\nFULL SCRIPT (for detailed scene analysis):\n{script}"
+    max_script_length = 40000  # Gemini has large context window
+    
+    if script_summary and len(script) > 20000:
+        # Use summary + partial script for very long scripts
+        if len(script) > max_script_length:
+            print(f"[GEMINI] Script is very long ({len(script)} chars), using summary + first {max_script_length} chars")
+            script_to_analyze = f"SCRIPT SUMMARY (full story overview):\n{script_summary}\n\nSCRIPT (first {max_script_length} chars for detailed analysis):\n{script[:max_script_length]}\n\n[Script continues... Total: {len(script)} chars. Use summary for full story context.]"
+        else:
+            print(f"[GEMINI] Using summary + full script ({len(script)} chars)")
+            script_to_analyze = f"SCRIPT SUMMARY:\n{script_summary}\n\nFULL SCRIPT:\n{script}"
     else:
-        # If script is still too long, truncate but keep character context
-        if len(script_to_analyze) > 15000:
-            print(f"[SCRIPT] Script is very long ({len(script)} chars), truncating to 15000 chars")
-            script_to_analyze = script_to_analyze[:15000] + "\n\n[Script continues...]"
+        # No summary or script not too long - use full script if possible
+        if len(script_to_analyze) > max_script_length:
+            print(f"[SCRIPT] Script is VERY long ({len(script)} chars), truncating to {max_script_length} chars")
+            script_to_analyze = script_to_analyze[:max_script_length] + f"\n\n[Script continues... Total length: {len(script)} chars]"
+        else:
+            print(f"[SCRIPT] Using full script ({len(script)} chars)")
     
     user_prompt = f"Analyze this script and split it into EXACTLY {num_parts} parts. Create one English image generation prompt for each part following the rules above. Use the CHARACTER DETAILS section to ensure absolute consistency across all prompts. OUTPUT IN ENGLISH ONLY:\n\n{script_to_analyze}"
     
@@ -1096,7 +1486,7 @@ def analyze_script_with_gemini(script: str, num_parts: int, gemini_api_key: str,
             ],
             config=types.GenerateContentConfig(
                 temperature=0.7,
-                max_output_tokens=8000  # Increased from 4000 to support more prompts
+                max_output_tokens=80000  # x10 from 8000 for higher output capacity
             )
         )
         
@@ -3101,14 +3491,96 @@ class ImageGeneratorTab(QWidget):
         """Update toolbar model options based on provider."""
         items = []
         if provider == "ChatGPT":
-            items = ["o3", "gpt-5"]
+            # Try to fetch models from OpenAI API
+            openai_models = self._fetch_openai_models_for_toolbar()
+            if openai_models:
+                items = openai_models
+            else:
+                # Fallback to hardcoded list
+                items = [
+                    "gpt-5",           # GPT-5 (Latest)
+                    "gpt-5-turbo",     # GPT-5 Turbo
+                    "gpt-4o",         # GPT-4o (Recommended)
+                    "gpt-4o-mini",    # GPT-4o Mini
+                    "gpt-4-turbo-preview",  # GPT-4 Turbo
+                    "gpt-3.5-turbo"   # GPT-3.5 Turbo
+                ]
         elif provider == "Gemini":
-            items = ["gemini-2.5-pro", "gemini-2.5-flash"]
+            items = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"]
         else:  # Groq default
             items = ["llama-3.3-70b-versatile", "llama-3.1-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"]
         
         self.toolbar_model_cb.clear()
         self.toolbar_model_cb.addItems(items)
+    
+    def _fetch_openai_models_for_toolbar(self):
+        """Fetch available OpenAI models from API for toolbar"""
+        try:
+            import requests
+            
+            if not self.api_client:
+                return None
+            
+            api_key = self.api_client.get_api_key("openai")
+            if not api_key or not api_key.strip():
+                return None
+            
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            response = requests.get(
+                "https://api.openai.com/v1/models",
+                headers=headers,
+                timeout=5
+            )
+            
+            if response.status_code != 200:
+                return None
+            
+            data = response.json()
+            models = data.get("data", [])
+            
+            # Filter for GPT models and sort by priority
+            gpt_models = []
+            model_priority = {
+                "gpt-5": 1000,
+                "gpt-5-turbo": 900,
+                "gpt-5o": 850,
+                "gpt-4o": 800,
+                "gpt-4o-mini": 700,
+                "gpt-4-turbo": 600,
+                "gpt-4": 500,
+                "gpt-3.5-turbo": 400
+            }
+            
+            for model in models:
+                model_id = model.get("id", "")
+                if not model_id.startswith("gpt-"):
+                    continue
+                
+                # Get priority
+                base_name = model_id.split("-")[0:2]
+                base_key = "-".join(base_name)
+                priority = model_priority.get(base_key, model_priority.get(model_id, 0))
+                
+                gpt_models.append((priority, model_id))
+            
+            # Sort by priority (highest first)
+            gpt_models.sort(key=lambda x: x[0], reverse=True)
+            
+            result = [model_id for _, model_id in gpt_models]
+            
+            if result:
+                print(f"[IMAGE TAB] Fetched {len(result)} OpenAI models from API")
+                return result
+            
+            return None
+            
+        except Exception as e:
+            print(f"[IMAGE TAB] Failed to fetch OpenAI models: {e}")
+            return None
     
     def on_browse_output(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Output Folder", str(self.output_dir))
