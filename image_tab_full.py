@@ -111,9 +111,112 @@ def save_script_cache(script: str, provider: str, model: str, script_summary: st
     except Exception as e:
         print(f"[CACHE] ❌ Error saving cache: {e}")
 
+def summarize_script(script: str, provider: str, model: str, api_key: str) -> str:
+    """Summarize script to identify main parts and characters"""
+    print(f"[SCRIPT SUMMARY] Summarizing script ({len(script)} chars)...")
+    
+    summary_prompt = """Analyze this script and create a comprehensive summary that includes:
+
+1. Main plot points and key scenes
+2. All main characters (protagonist, antagonist) with their roles
+3. Supporting/background characters
+4. Setting and environment
+5. Key emotional moments
+
+Return a structured summary that captures the essence of the script for character analysis and prompt generation.
+
+Script:
+{script_content}"""
+
+    try:
+        # Limit script length for summary (use first 12000 chars if too long)
+        script_for_summary = script[:12000] if len(script) > 12000 else script
+        if len(script) > 12000:
+            script_for_summary += "\n\n[Script continues...]"
+        
+        if provider == "Groq":
+            import requests
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "llama-3.3-70b-versatile",
+                "messages": [
+                    {"role": "user", "content": summary_prompt.format(script_content=script_for_summary)}
+                ],
+                "temperature": 0.3,
+                "max_tokens": 1500
+            }
+            response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=60
+            )
+            response.raise_for_status()
+            result = response.json()
+            summary = result["choices"][0]["message"]["content"].strip()
+            
+        elif provider == "ChatGPT":
+            try:
+                import openai
+            except ImportError:
+                print("[SCRIPT SUMMARY] ❌ openai library not installed")
+                return script[:2000]  # Fallback to truncated script
+            
+            client = openai.OpenAI(api_key=api_key)
+            response = client.chat.completions.create(
+                model=model if model else "gpt-4o-mini",
+                messages=[
+                    {"role": "user", "content": summary_prompt.format(script_content=script_for_summary)}
+                ],
+                temperature=0.3,
+                max_tokens=1500
+            )
+            summary = response.choices[0].message.content.strip()
+            
+        elif provider == "Gemini":
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model=model if model else "gemini-2.0-flash-exp",
+                contents=[
+                    {"role": "user", "parts": [{"text": summary_prompt.format(script_content=script_for_summary)}]}
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=0.3,
+                    max_output_tokens=1500
+                )
+            )
+            summary = response.text.strip()
+        else:
+            return script[:2000]  # Fallback
+        
+        print(f"[SCRIPT SUMMARY] ✅ Generated summary ({len(summary)} chars)")
+        return summary
+        
+    except Exception as e:
+        print(f"[SCRIPT SUMMARY] ❌ Error: {e}, using script preview as fallback")
+        return script[:2000]  # Fallback to first 2000 chars
+
 def extract_character_details_from_script(script: str, provider: str, model: str, api_key: str) -> dict:
-    """Extract character details from script using AI"""
-    print(f"[CHARACTER EXTRACTION] Extracting character details from script...")
+    """Extract character details from script using AI - First summarize, then extract characters"""
+    print(f"[CHARACTER EXTRACTION] Starting character extraction process...")
+    
+    # Step 1: Summarize script first (for all scripts to get main parts)
+    script_summary = None
+    if len(script) > 5000:
+        print(f"[CHARACTER EXTRACTION] Script is long ({len(script)} chars), summarizing first...")
+        script_summary = summarize_script(script, provider, model, api_key)
+        # Use summary + key parts of original script for character extraction
+        script_for_extraction = f"SCRIPT SUMMARY:\n{script_summary}\n\nKEY SCRIPT EXCERPTS (for detailed character descriptions):\n{script[:6000]}"
+    else:
+        # For short scripts, still create a brief summary for context
+        print(f"[CHARACTER EXTRACTION] Script is short ({len(script)} chars), using full script")
+        script_for_extraction = script
+        # Will extract summary from character extraction response
     
     character_extraction_prompt = """Extract and analyze all characters from this script. Return a JSON object with this exact structure:
 
@@ -160,7 +263,7 @@ Return ONLY the JSON object, no other text."""
             payload = {
                 "model": "llama-3.3-70b-versatile",
                 "messages": [
-                    {"role": "user", "content": f"{character_extraction_prompt}\n\nScript:\n{script[:8000]}"}  # Limit script length
+                    {"role": "user", "content": f"{character_extraction_prompt}\n\nScript:\n{script_for_extraction}"}
                 ],
                 "temperature": 0.3,
                 "max_tokens": 2000
@@ -186,7 +289,7 @@ Return ONLY the JSON object, no other text."""
             response = client.chat.completions.create(
                 model=model if model else "gpt-4o-mini",
                 messages=[
-                    {"role": "user", "content": f"{character_extraction_prompt}\n\nScript:\n{script[:8000]}"}
+                    {"role": "user", "content": f"{character_extraction_prompt}\n\nScript:\n{script_for_extraction}"}
                 ],
                 temperature=0.3,
                 max_tokens=2000
@@ -200,7 +303,7 @@ Return ONLY the JSON object, no other text."""
             response = client.models.generate_content(
                 model=model if model else "gemini-2.0-flash-exp",
                 contents=[
-                    {"role": "user", "parts": [{"text": f"{character_extraction_prompt}\n\nScript:\n{script[:8000]}"}]}
+                    {"role": "user", "parts": [{"text": f"{character_extraction_prompt}\n\nScript:\n{script_for_extraction}"}]}
                 ],
                 config=types.GenerateContentConfig(
                     temperature=0.3,
@@ -216,11 +319,28 @@ Return ONLY the JSON object, no other text."""
         json_match = re.search(r'\{.*\}', content, re.DOTALL)
         if json_match:
             character_data = json.loads(json_match.group())
+            
+            # Ensure script_summary is included (use pre-summarized version if available, otherwise use extracted)
+            if script_summary:
+                # Use the summary we created (more reliable for long scripts)
+                character_data["script_summary"] = script_summary
+            elif "script_summary" not in character_data or not character_data.get("script_summary"):
+                # If no summary, create a brief one from script
+                character_data["script_summary"] = script[:500] + "..." if len(script) > 500 else script
+            
             print(f"[CHARACTER EXTRACTION] ✅ Extracted {len(character_data.get('main_characters', []))} main characters")
+            if character_data.get("script_summary"):
+                print(f"[CHARACTER EXTRACTION] ✅ Script summary included ({len(character_data['script_summary'])} chars)")
             return character_data
         else:
             print(f"[CHARACTER EXTRACTION] ⚠️ Could not parse JSON from response")
-            return {"main_characters": [], "supporting_characters": [], "script_summary": ""}
+            # Return empty structure with script_summary if we have it
+            result = {"main_characters": [], "supporting_characters": [], "script_summary": ""}
+            if script_summary:
+                result["script_summary"] = script_summary
+            elif len(script) > 0:
+                result["script_summary"] = script[:500] + "..." if len(script) > 500 else script
+            return result
             
     except Exception as e:
         print(f"[CHARACTER EXTRACTION] ❌ Error: {e}")
@@ -812,18 +932,29 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
             print(f"[SCRIPT] Script is very long ({len(script)} chars), truncating to 15000 chars")
             script_to_analyze = script_to_analyze[:15000] + "\n\n[Script continues...]"
     
-    user_prompt = f"Analyze this script and split it into EXACTLY {num_parts} parts. Create one English image generation prompt for each part following the rules above. Use the CHARACTER DETAILS section to ensure absolute consistency across all prompts. OUTPUT IN ENGLISH ONLY:\n\n{script_to_analyze}"
+    # OPTIMIZE FOR OPENAI PROMPT CACHING:
+    # - System message contains ALL static content (instructions + character details) - will be cached
+    # - User message contains ONLY script content (dynamic) - changes per script
+    # This structure allows OpenAI to cache the system prompt (saves ~50% cost on cached tokens)
+    # Cache applies automatically for prompts >1024 tokens
+    
+    # System prompt: All instructions + character details (STATIC - will be cached)
+    # User prompt: Only script content (DYNAMIC - changes per script)
+    user_prompt = f"Analyze this script and split it into EXACTLY {num_parts} parts. Create one English image generation prompt for each part following the rules in the system message. Use the CHARACTER DETAILS section to ensure absolute consistency across all prompts. OUTPUT IN ENGLISH ONLY:\n\n{script_to_analyze}"
     
     headers = {
         "Authorization": f"Bearer {openai_api_key}",
         "Content-Type": "application/json"
     }
     
+    # Structure optimized for OpenAI Prompt Caching:
+    # - system: Instructions + character details (cached, saves ~50% cost)
+    # - user: Script content only (not cached, changes per script)
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
+            {"role": "system", "content": system_prompt},  # STATIC - cached by OpenAI
+            {"role": "user", "content": user_prompt}       # DYNAMIC - script content
         ],
         "temperature": 0.7,
         "max_tokens": 8000  # Increased from 4000 to support more prompts
@@ -840,6 +971,16 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
         
         result = response.json()
         content = result["choices"][0]["message"]["content"].strip()
+        
+        # Check for OpenAI Prompt Caching usage
+        usage = result.get("usage", {})
+        cached_tokens = usage.get("cached_tokens", 0)
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        if cached_tokens > 0:
+            cache_percentage = (cached_tokens / prompt_tokens * 100) if prompt_tokens > 0 else 0
+            print(f"[OPENAI CACHE] ✅ Using cached tokens: {cached_tokens}/{prompt_tokens} ({cache_percentage:.1f}%) - Saving ~50% cost on cached portion!")
+        else:
+            print(f"[OPENAI CACHE] ℹ️ No cached tokens (first request or cache expired)")
         
         print(f"[OPENAI AI RAW RESPONSE]:\n{content}\n{'='*80}")
         print(f"[OPENAI DEBUG] Requested {num_parts} prompts, response length: {len(content)} chars")

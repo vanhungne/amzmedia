@@ -109,11 +109,11 @@ class AutoWorkflowOrchestrator(QObject):
         
         # Fallback to project settings if Image tab UI doesn't have selection
         if not provider:
-            provider = getattr(self.project, 'prompt_provider', 'Groq') or 'Groq'
+        provider = getattr(self.project, 'prompt_provider', 'Groq') or 'Groq'
             print(f"[AUTO WORKFLOW] Using provider from project: {provider}")
         
         if not model:
-            model = getattr(self.project, 'prompt_model', 'llama-3.3-70b-versatile') or 'llama-3.3-70b-versatile'
+        model = getattr(self.project, 'prompt_model', 'llama-3.3-70b-versatile') or 'llama-3.3-70b-versatile'
             print(f"[AUTO WORKFLOW] Using model from project: {model}")
         
         self.step_changed.emit(f"🤖 Analyzing script with {provider} ({model})...")
