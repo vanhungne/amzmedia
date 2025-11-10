@@ -21,8 +21,26 @@ export default function OpenAIKeysPage() {
   });
 
   useEffect(() => {
+    // Try to initialize table if it doesn't exist
+    initTableIfNeeded();
     loadData();
   }, []);
+
+  async function initTableIfNeeded() {
+    try {
+      const res = await fetch('/api/init-openai-table', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const data = await res.json();
+      if (data.success && !data.alreadyExists) {
+        console.log('✅ OpenAI table initialized');
+      }
+    } catch (err) {
+      // Silently fail - table might already exist or will be created on server restart
+      console.log('Table init check:', err);
+    }
+  }
 
   async function loadData() {
     try {

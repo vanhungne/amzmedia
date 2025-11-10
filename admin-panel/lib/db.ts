@@ -154,6 +154,20 @@ export async function initDatabase(): Promise<void> {
       [updated_at] DATETIME2 DEFAULT GETDATE()
     );
 
+    IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[openai_keys]') AND type in (N'U'))
+    CREATE TABLE [dbo].[openai_keys] (
+      [id] INT IDENTITY(1,1) PRIMARY KEY,
+      [api_key] NVARCHAR(500) NOT NULL UNIQUE,
+      [name] NVARCHAR(255),
+      [assigned_user_id] INT NULL FOREIGN KEY REFERENCES [dbo].[users]([id]) ON DELETE SET NULL,
+      [status] NVARCHAR(20) NOT NULL DEFAULT 'active', -- 'active', 'dead'
+      [last_used] DATETIME2 NULL,
+      [last_error] NVARCHAR(MAX) NULL,
+      [created_by] INT NOT NULL FOREIGN KEY REFERENCES [dbo].[users]([id]),
+      [created_at] DATETIME2 DEFAULT GETDATE(),
+      [updated_at] DATETIME2 DEFAULT GETDATE()
+    );
+
   `);
   
   // Create default admin user if not exists (password: admin123)
