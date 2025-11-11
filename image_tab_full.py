@@ -1879,19 +1879,71 @@ def generate_with_gemini_image(client: genai.Client, prompt: str,
         images.extend(extract_inline_image_bytes_from_gemini(resp))
     return images
 
-def ai_fix_prompt(client: genai.Client, raw_prompt: str) -> str:
-    system_hint = (
-        "You are an expert prompt editor for image generation. "
-        "Rewrite the user's prompt to be clear, specific, visually rich, and safe. "
-        "Keep it concise (1-3 sentences). Reply with the improved prompt only."
+def ai_fix_prompt(client: genai.Client, raw_prompt: str, user_instruction: str = "") -> str:
+    """AI Fix prompt using Gemini Flash with system instruction"""
+    print(f"[AI FIX PROMPT] Starting API call with prompt: {raw_prompt[:50]}...")
+    
+    system_instruction = (
+        "You are an expert prompt engineer for an image generation AI. Your task is to refine a user's prompt based on their request. "
+        "You must ONLY respond with the new, improved prompt text in English. Do not add any conversational text, explanations, or markdown formatting. "
+        "Preserve the core subject of the original prompt while incorporating the user's desired changes."
     )
-    resp = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=[{"role": "user", "parts": [{"text": system_hint}, {"text": raw_prompt}]}],
-        config=GenerateContentConfig(response_modalities=[Modality.TEXT])
-    )
+    
+    # Build user message with prompt and optional instruction
+    user_message_parts = []
+    user_message_parts.append(f"Current prompt to refine:\n{raw_prompt}")
+    if user_instruction.strip():
+        user_message_parts.append(f"\nUser's instruction for refinement:\n{user_instruction}")
+    user_message = "\n".join(user_message_parts)
+    
+    print(f"[AI FIX PROMPT] User message length: {len(user_message)} chars")
+    
+    # Try using system_instruction parameter directly, fallback to config or message if not supported
+    try:
+        # Method 1: Try system_instruction as direct parameter (new Gemini API)
+        print("[AI FIX PROMPT] Trying Method 1: system_instruction as direct parameter")
+        resp = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[{"role": "user", "parts": [{"text": user_message}]}],
+            system_instruction=system_instruction,
+            config=GenerateContentConfig(response_modalities=[Modality.TEXT])
+        )
+        print("[AI FIX PROMPT] Method 1 succeeded")
+    except (TypeError, AttributeError) as e1:
+        print(f"[AI FIX PROMPT] Method 1 failed: {e1}, trying Method 2...")
+        try:
+            # Method 2: Try system_instruction in config
+            print("[AI FIX PROMPT] Trying Method 2: system_instruction in config")
+            resp = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[{"role": "user", "parts": [{"text": user_message}]}],
+                config=GenerateContentConfig(
+                    response_modalities=[Modality.TEXT],
+                    system_instruction=system_instruction
+                )
+            )
+            print("[AI FIX PROMPT] Method 2 succeeded")
+        except (TypeError, AttributeError) as e2:
+            # Method 3: Fallback - include system instruction in user message
+            print(f"[AI FIX PROMPT] Method 2 failed: {e2}, using Method 3: fallback in message")
+            full_message = f"{system_instruction}\n\n{user_message}"
+            resp = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[{"role": "user", "parts": [{"text": full_message}]}],
+                config=GenerateContentConfig(response_modalities=[Modality.TEXT])
+            )
+            print("[AI FIX PROMPT] Method 3 succeeded")
+    except Exception as e:
+        print(f"[AI FIX PROMPT] All methods failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+    
     text = getattr(resp, "text", None) or ""
-    return text.strip() or raw_prompt
+    result = text.strip() or raw_prompt
+    print(f"[AI FIX PROMPT] API call completed. Result length: {len(result)} chars")
+    print(f"[AI FIX PROMPT] Result preview: {result[:100]}...")
+    return result
 
 def convert_text_prompt_to_video_groq(groq_api_key: str, image_prompt: str) -> str:
     """Convert image prompt to video prompt using Groq API (text-only, no image analysis)"""
@@ -2260,6 +2312,118 @@ class ImageLightbox(QDialog):
         layout.addWidget(image_label)
         
         self.showMaximized()
+
+# ==================== AI FIX PROMPT DIALOG ====================
+class AIFixPromptDialog(QDialog):
+    """Dialog to get user instruction for AI fix prompt"""
+    def __init__(self, parent=None, current_prompt: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("✨ AI Fix Prompt")
+        self.setModal(True)
+        self.resize(600, 400)
+        self.user_instruction = ""
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+        
+        # Title
+        title = QLabel("✨ AI Fix Prompt")
+        title.setStyleSheet(f"""
+            QLabel {{
+                color: {Theme.PRIMARY};
+                font-size: 16pt;
+                font-weight: bold;
+            }}
+        """)
+        layout.addWidget(title)
+        
+        # Current prompt display
+        current_label = QLabel("Current prompt:")
+        current_label.setStyleSheet(f"font-weight: 600; color: {Theme.TEXT_PRIMARY};")
+        layout.addWidget(current_label)
+        
+        current_display = QTextEdit()
+        current_display.setPlainText(current_prompt)
+        current_display.setReadOnly(True)
+        current_display.setMaximumHeight(80)
+        current_display.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {Theme.BG_SECONDARY};
+                border: 1px solid {Theme.BORDER};
+                border-radius: 4px;
+                padding: 6px;
+            }}
+        """)
+        layout.addWidget(current_display)
+        
+        # Instruction input (optional)
+        instruction_label = QLabel("Instruction (optional - leave empty to auto-refine):")
+        instruction_label.setStyleSheet(f"font-weight: 600; color: {Theme.TEXT_PRIMARY}; margin-top: 8px;")
+        layout.addWidget(instruction_label)
+        
+        self.instruction_edit = QTextEdit()
+        self.instruction_edit.setPlaceholderText("E.g., 'Make it more detailed', 'Add cinematic lighting', 'Focus on the character's expression'...")
+        self.instruction_edit.setMaximumHeight(100)
+        self.instruction_edit.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: white;
+                border: 2px solid {Theme.BORDER};
+                border-radius: 4px;
+                padding: 6px;
+            }}
+            QTextEdit:focus {{
+                border-color: {Theme.PRIMARY};
+            }}
+        """)
+        layout.addWidget(self.instruction_edit)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Theme.SECONDARY};
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: {Theme.SECONDARY_HOVER};
+            }}
+        """)
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_btn)
+        
+        fix_btn = QPushButton("✨ Fix Prompt")
+        fix_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Theme.PRIMARY};
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: {Theme.PRIMARY_HOVER};
+            }}
+        """)
+        fix_btn.clicked.connect(self.accept)
+        button_layout.addWidget(fix_btn)
+        
+        layout.addLayout(button_layout)
+        
+        # Set focus to instruction edit
+        self.instruction_edit.setFocus()
+    
+    def get_instruction(self) -> str:
+        """Get user instruction (empty string if none)"""
+        return self.instruction_edit.toPlainText().strip()
 
 # ==================== SCRIPT IMPORT DIALOG ====================
 class ScriptImportDialog(QDialog):
@@ -2841,10 +3005,11 @@ class PromptRow(QWidget):
         mapping = {
             "queue": ("QUEUE", Theme.WARNING),
             "generating": ("GENERATING", Theme.PRIMARY),
+            "fixing": ("FIXING", Theme.PRIMARY),
             "done": ("DONE", Theme.SUCCESS),
             "failed": ("FAILED", Theme.DANGER),
         }
-        text, color = mapping.get(status, ("UNKNOWN", Theme.TEXT_MUTED))
+        text, color = mapping.get(status.lower(), ("UNKNOWN", Theme.TEXT_MUTED))
         self.status_badge.setText(text)
         self.status_badge.setFixedHeight(20)
         self.status_badge.setStyleSheet(f"""
@@ -3217,6 +3382,7 @@ class ImageGeneratorTab(QWidget):
     # Signals for thread-safe communication
     script_analysis_success = Signal(list)  # List[str] of prompts
     script_analysis_error = Signal(str)     # Error message
+    ai_fix_result = Signal(int, str, str)  # row_index, fixed_text, status
     
     def __init__(self, parent=None, api_client=None, project_manager=None, main_window=None):
         super().__init__(parent)
@@ -3341,6 +3507,8 @@ class ImageGeneratorTab(QWidget):
         # Connect signals for thread-safe script analysis
         self.script_analysis_success.connect(self._on_script_analysis_success)
         self.script_analysis_error.connect(self._on_script_analysis_error)
+        # Connect signal for AI fix result
+        self.ai_fix_result.connect(self._on_ai_fix_result)
         
         self._build_ui()
         self._load_settings_to_ui()
@@ -3988,42 +4156,175 @@ class ImageGeneratorTab(QWidget):
     def regenerate_row(self, row: PromptRow):
         self.generate_rows([row])
     
-    def ai_fix_single_row(self, row: PromptRow):
-        """AI Fix cho một row cụ thể"""
-        row.set_busy(True)
-        row.set_status("fixing")
-        
-        def worker():
-            raw = row.get_prompt()
-            fixed = None
-            err = None
-            tries = 0
-            max_retries = max(1, self.retry_spin.value())
+    @Slot(int, str, str)
+    def _on_ai_fix_result(self, row_index: int, fixed_text: str, status: str):
+        """Slot to handle AI fix result (called from worker thread via signal)"""
+        try:
+            print(f"[AI FIX UI UPDATE] _on_ai_fix_result called with row_index: {row_index}")
+            print(f"[AI FIX UI UPDATE] Status: {status}")
+            print(f"[AI FIX UI UPDATE] Fixed text length: {len(fixed_text) if fixed_text else 0} chars")
+            print(f"[AI FIX UI UPDATE] Fixed text preview: {fixed_text[:50] if fixed_text else 'None'}...")
             
-            while tries < max_retries:
-                api_key = self.rotator.current()
-                client = genai.Client(api_key=api_key)
-                try:
-                    fixed = ai_fix_prompt(client, raw)
+            # Find row by index
+            row = None
+            for r in self.rows:
+                if r.index == row_index:
+                    row = r
                     break
-                except Exception as e:
-                    err = e
-                    if self.auto_retry_cb.isChecked() and is_rate_or_quota_error(str(e)):
-                        self.rotator.next()
-                        tries += 1
-                        time.sleep(0.25)
-                    else:
-                        break
             
-            if fixed:
-                row.txt.setPlainText(fixed)
-                row.set_status("done")
+            if not row:
+                print(f"[AI FIX UI UPDATE] ERROR: Row with index {row_index} not found!")
+                return
+            
+            if fixed_text and fixed_text.strip():
+                print(f"[AI FIX UI UPDATE] Setting prompt text to row {row_index}...")
+                row.txt.setPlainText(fixed_text)
+                print(f"[AI FIX UI UPDATE] Prompt text set successfully!")
+                row.set_status(status)
+                print(f"[AI FIX UI UPDATE] Status set to: {status}")
             else:
-                row.set_status(f"error: {err}")
+                print(f"[AI FIX UI UPDATE] No fixed text, setting status to: {status}")
+                row.set_status(status)
             
             row.set_busy(False)
-        
-        threading.Thread(target=worker, daemon=True).start()
+            print(f"[AI FIX UI UPDATE] UI update completed successfully!")
+                
+        except Exception as e:
+            print(f"[AI FIX UI UPDATE] Error in _on_ai_fix_result: {e}")
+            import traceback
+            traceback.print_exc()
+            # Try to find row and set failed status
+            try:
+                for r in self.rows:
+                    if r.index == row_index:
+                        r.set_busy(False)
+                        r.set_status("failed")
+                        break
+            except:
+                pass
+    
+    def ai_fix_single_row(self, row: PromptRow, user_instruction: str = ""):
+        """AI Fix cho một row cụ thể"""
+        try:
+            # Show dialog to get user instruction (optional)
+            current_prompt = row.get_prompt()
+            print(f"[AI FIX] Starting AI fix for prompt: {current_prompt[:50]}...")
+            
+            dialog = AIFixPromptDialog(self, current_prompt)
+            result = dialog.exec()
+            
+            if result != QDialog.Accepted:
+                print("[AI FIX] User cancelled dialog")
+                return  # User cancelled
+            
+            user_instruction = dialog.get_instruction()
+            print(f"[AI FIX] User instruction: {user_instruction[:50] if user_instruction else 'None (auto-refine)'}")
+            
+            # Check if we have Gemini API keys
+            if not hasattr(self, 'rotator') or not self.rotator:
+                error_msg = "No Gemini API keys available. Please add Gemini API keys in settings."
+                print(f"[AI FIX] ERROR: {error_msg}")
+                QMessageBox.warning(self, "AI Fix Error", error_msg)
+                return
+            
+            if len(self.rotator) == 0:
+                error_msg = "No Gemini API keys available. Please add Gemini API keys in settings."
+                print(f"[AI FIX] ERROR: {error_msg}")
+                QMessageBox.warning(self, "AI Fix Error", error_msg)
+                return
+            
+            # UI updates on main thread
+            row.set_busy(True)
+            row.set_status("fixing")
+            print("[AI FIX] Status set to FIXING, starting worker thread...")
+            
+            def worker():
+                try:
+                    raw = row.get_prompt()
+                    print(f"[AI FIX WORKER] Processing prompt: {raw[:50]}...")
+                    fixed = None
+                    err = None
+                    tries = 0
+                    max_retries = max(1, self.retry_spin.value())
+                    
+                    while tries < max_retries:
+                        try:
+                            api_key = self.rotator.current()
+                            if not api_key:
+                                err = "No API key available"
+                                print(f"[AI FIX WORKER] ERROR: {err}")
+                                break
+                            
+                            print(f"[AI FIX WORKER] Attempt {tries + 1}/{max_retries}, using API key: {api_key[:10]}...")
+                            client = genai.Client(api_key=api_key)
+                            fixed = ai_fix_prompt(client, raw, user_instruction)
+                            
+                            if fixed and fixed != raw:
+                                print(f"[AI FIX WORKER] Success! Fixed prompt: {fixed[:50]}...")
+                                break
+                            else:
+                                print(f"[AI FIX WORKER] Warning: No change or empty result")
+                                if not fixed:
+                                    err = "AI returned empty result"
+                                break
+                                
+                        except Exception as e:
+                            err = e
+                            error_str = str(e)
+                            print(f"[AI FIX WORKER] Exception: {error_str}")
+                            import traceback
+                            traceback.print_exc()
+                            
+                            if self.auto_retry_cb.isChecked() and is_rate_or_quota_error(error_str):
+                                print(f"[AI FIX WORKER] Retryable error, trying next API key...")
+                                self.rotator.next()
+                                tries += 1
+                                time.sleep(0.25)
+                            else:
+                                print(f"[AI FIX WORKER] Non-retryable error or retry disabled, stopping")
+                                break
+                    
+                    # Emit signal to update UI on main thread (use row index instead of row object)
+                    fixed_text = fixed if fixed and fixed.strip() else ""
+                    row_index = row.index  # Get row index
+                    if fixed_text:
+                        print(f"[AI FIX WORKER] Emitting signal with fixed text: {fixed_text[:50]}...")
+                        print(f"[AI FIX WORKER] Row index: {row_index}")
+                        self.ai_fix_result.emit(row_index, fixed_text, "done")
+                        print(f"[AI FIX WORKER] Signal emitted successfully")
+                    else:
+                        error_msg = f"Failed: {err}" if err else "Failed: Unknown error"
+                        print(f"[AI FIX WORKER] Failed: {error_msg}")
+                        self.ai_fix_result.emit(row_index, "", "failed")
+                        # Show error message after a short delay
+                        QTimer.singleShot(100, lambda msg=error_msg: QMessageBox.warning(
+                            self, "AI Fix Failed", f"Failed to fix prompt:\n\n{msg}"
+                        ))
+                    
+                    print("[AI FIX WORKER] Worker finished")
+                    
+                except Exception as e:
+                    print(f"[AI FIX WORKER] Fatal error in worker: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    error_msg = f"Fatal error: {e}"
+                    row_index = row.index if row else -1
+                    self.ai_fix_result.emit(row_index, "", "failed")
+                    QTimer.singleShot(100, lambda msg=error_msg: QMessageBox.critical(
+                        self, "AI Fix Error", f"Fatal error:\n\n{msg}"
+                    ))
+            
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
+            print(f"[AI FIX] Worker thread started: {thread.name}")
+            
+        except Exception as e:
+            print(f"[AI FIX] Error in ai_fix_single_row: {e}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "AI Fix Error", f"Error starting AI fix:\n\n{e}")
+            row.set_busy(False)
+            row.set_status("failed")
     
     def on_import_txt(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Import Prompts", "", "Text files (*.txt)")
@@ -4354,9 +4655,19 @@ class ImageGeneratorTab(QWidget):
             QMessageBox.information(self, "Info", "Select at least 1 row.")
             return
         
+        # Show dialog to get user instruction (optional) - use first prompt as example
+        first_prompt = targets[0].get_prompt() if targets else ""
+        dialog = AIFixPromptDialog(self, first_prompt)
+        
+        if dialog.exec() != QDialog.Accepted:
+            return  # User cancelled
+        
+        user_instruction = dialog.get_instruction()
+        
+        # UI updates on main thread
         for r in targets:
             r.set_busy(True)
-            r.set_status("generating")
+            r.set_status("fixing")
         
         def worker():
             for r in targets:
@@ -4370,7 +4681,7 @@ class ImageGeneratorTab(QWidget):
                     api_key = self.rotator.current()
                     client = genai.Client(api_key=api_key)
                     try:
-                        fixed = ai_fix_prompt(client, raw)
+                        fixed = ai_fix_prompt(client, raw, user_instruction)
                         break
                     except Exception as e:
                         err = e
@@ -4381,12 +4692,14 @@ class ImageGeneratorTab(QWidget):
                         else:
                             break
                 
+                # Schedule UI updates on main thread (thread-safe)
+                # Use default parameters to capture values at lambda creation time
                 if fixed:
-                    r.txt.setPlainText(fixed)
-                    r.set_status("done")
+                    QTimer.singleShot(0, lambda row=r, text=fixed: row.txt.setPlainText(text))
+                    QTimer.singleShot(0, lambda row=r: row.set_status("done"))
                 else:
-                    r.set_status("failed")
-                r.set_busy(False)
+                    QTimer.singleShot(0, lambda row=r: row.set_status("failed"))
+                QTimer.singleShot(0, lambda row=r: row.set_busy(False))
         
         threading.Thread(target=worker, daemon=True).start()
     

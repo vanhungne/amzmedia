@@ -4766,7 +4766,7 @@ class PromptGuideDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Video Generator Pro v2")
+        self.setWindowTitle("Video Generator Pro Supper 3.1")
         self.resize(1360, 900)  # Allow resizing instead of fixed size
         self.setMinimumSize(1200, 700)  # Set minimum size for usability
         self.thread_pool = QThreadPool.globalInstance()
