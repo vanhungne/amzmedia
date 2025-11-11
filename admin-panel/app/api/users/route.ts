@@ -98,6 +98,21 @@ async function createUserHandler(req: NextRequest) {
       );
     }
     
+    // Kiểm tra: Hệ thống chỉ có 1 admin duy nhất
+    if (role === 'admin') {
+      const db = await getDb();
+      const adminCheck = await db.request().query(`
+        SELECT COUNT(*) as count FROM [dbo].[users] WHERE [role] = 'admin'
+      `);
+      
+      if (adminCheck.recordset[0].count > 0) {
+        return NextResponse.json(
+          { error: 'Hệ thống chỉ cho phép 1 admin duy nhất. Đã có admin trong hệ thống.' },
+          { status: 400 }
+        );
+      }
+    }
+    
     const user = await createUser(username, password, email || null, role || 'user');
     
     return NextResponse.json({

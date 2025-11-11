@@ -115,8 +115,9 @@ async function deleteProject(req: NextRequest, { params }: { params: Promise<{ i
 
 // Manager và admin đều có thể xem project
 export const GET = requireAuth(getProject, ['admin', 'user', 'manager']);
-// Chỉ admin mới có thể sửa/xóa projects
-export const PUT = requireAdmin(updateProject);
+// Manager và admin đều có thể sửa projects
+export const PUT = requireAuth(updateProject, ['admin', 'user', 'manager']);
+// Chỉ admin mới có thể xóa projects
 export const DELETE = requireAdmin(deleteProject);
 
 

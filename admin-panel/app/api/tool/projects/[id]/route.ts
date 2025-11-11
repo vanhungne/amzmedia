@@ -56,10 +56,10 @@ export async function PUT(
       );
     }
 
-    // Only admin can update projects
-    if (user.role !== 'admin') {
+    // Manager và admin đều có thể update projects
+    if (user.role !== 'admin' && user.role !== 'manager') {
       return NextResponse.json(
-        { success: false, error: 'Forbidden - Admin only' },
+        { success: false, error: 'Forbidden - Admin or Manager only' },
         { status: 403 }
       );
     }

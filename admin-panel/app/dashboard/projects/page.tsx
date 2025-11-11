@@ -170,24 +170,19 @@ export default function ProjectsPage() {
                       <div className="text-sm text-gray-500">{project.created_by_username || '-'}</div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                      <button
+                        onClick={() => handleEdit(project)}
+                        className="text-primary-600 hover:text-primary-900 mr-4"
+                      >
+                        <Edit className="w-4 h-4 inline" />
+                      </button>
                       {user?.role !== 'manager' && (
-                        <>
-                          <button
-                            onClick={() => handleEdit(project)}
-                            className="text-primary-600 hover:text-primary-900 mr-4"
-                          >
-                            <Edit className="w-4 h-4 inline" />
-                          </button>
-                          <button
-                            onClick={() => handleDelete(project.id)}
-                            className="text-red-600 hover:text-red-900"
-                          >
-                            <Trash2 className="w-4 h-4 inline" />
-                          </button>
-                        </>
-                      )}
-                      {user?.role === 'manager' && (
-                        <span className="text-gray-400 text-xs">Chỉ xem</span>
+                        <button
+                          onClick={() => handleDelete(project.id)}
+                          className="text-red-600 hover:text-red-900"
+                        >
+                          <Trash2 className="w-4 h-4 inline" />
+                        </button>
                       )}
                     </td>
                   </tr>

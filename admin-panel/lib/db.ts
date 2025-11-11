@@ -170,24 +170,8 @@ export async function initDatabase(): Promise<void> {
 
   `);
   
-  // Create default admin user if not exists (password: admin123)
-  const adminCheck = await db.request().query(`
-    SELECT COUNT(*) as count FROM [dbo].[users] WHERE [username] = 'admin'
-  `);
-  
-  if (adminCheck.recordset[0].count === 0) {
-    const adminPasswordHash = await hashPassword('admin123');
-    await db.request()
-      .input('username', sql.NVarChar(100), 'admin')
-      .input('email', sql.NVarChar(255), 'admin@workflow.com')
-      .input('password_hash', sql.NVarChar(255), adminPasswordHash)
-      .input('role', sql.NVarChar(20), 'admin')
-      .query(`
-        INSERT INTO [dbo].[users] ([username], [email], [password_hash], [role], [is_active])
-        VALUES (@username, @email, @password_hash, @role, 1)
-      `);
-    console.log('✅ Admin user created (username: admin, password: admin123)');
-  }
+  // Không tự động tạo admin - admin phải được tạo thủ công
+  // Hệ thống chỉ có 1 admin duy nhất
   
   console.log('✅ Database initialized');
 }

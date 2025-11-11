@@ -34,6 +34,35 @@ async function updateUser(req: NextRequest, { params }: { params: Promise<{ id: 
       }
     }
     
+    // Kiểm tra: Hệ thống chỉ có 1 admin duy nhất
+    if (role === 'admin') {
+      // Lấy role hiện tại của user
+      const currentUser = await db.request()
+        .input('id', sql.Int, userId)
+        .query(`SELECT [role] FROM [dbo].[users] WHERE [id] = @id`);
+      
+      if (currentUser.recordset.length === 0) {
+        return NextResponse.json({ error: 'User not found' }, { status: 404 });
+      }
+      
+      const currentRole = currentUser.recordset[0].role;
+      
+      // Nếu user hiện tại không phải admin, và đang cố gắng đổi thành admin
+      if (currentRole !== 'admin') {
+        // Kiểm tra xem đã có admin chưa
+        const adminCheck = await db.request().query(`
+          SELECT COUNT(*) as count FROM [dbo].[users] WHERE [role] = 'admin'
+        `);
+        
+        if (adminCheck.recordset[0].count > 0) {
+          return NextResponse.json(
+            { error: 'Hệ thống chỉ cho phép 1 admin duy nhất. Đã có admin trong hệ thống.' },
+            { status: 400 }
+          );
+        }
+      }
+    }
+    
     if (password) {
       // Update password
       const passwordHash = await hashPassword(password);
@@ -121,6 +150,29 @@ async function deleteUser(req: NextRequest, { params }: { params: Promise<{ id: 
         { error: 'Cannot delete your own account' },
         { status: 400 }
       );
+    }
+    
+    // Kiểm tra: Không cho phép xóa admin nếu đó là admin duy nhất
+    const userToDelete = await db.request()
+      .input('id', sql.Int, userId)
+      .query(`SELECT [role] FROM [dbo].[users] WHERE [id] = @id`);
+    
+    if (userToDelete.recordset.length === 0) {
+      return NextResponse.json({ error: 'User not found' }, { status: 404 });
+    }
+    
+    if (userToDelete.recordset[0].role === 'admin') {
+      // Kiểm tra xem có bao nhiêu admin
+      const adminCount = await db.request().query(`
+        SELECT COUNT(*) as count FROM [dbo].[users] WHERE [role] = 'admin'
+      `);
+      
+      if (adminCount.recordset[0].count <= 1) {
+        return NextResponse.json(
+          { error: 'Không thể xóa admin. Hệ thống phải có ít nhất 1 admin.' },
+          { status: 400 }
+        );
+      }
     }
     
     console.log(`Attempting to delete user ID: ${userId}`);
