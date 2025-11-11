@@ -173,7 +173,7 @@ export async function getUsers(): Promise<{ users: User[] }> {
   return res.json();
 }
 
-export async function createUser(user: { username: string; password: string; email?: string; role?: 'admin' | 'user' }): Promise<User> {
+export async function createUser(user: { username: string; password: string; email?: string; role?: 'admin' | 'user' | 'manager' }): Promise<User> {
   const res = await fetch(`${API_BASE}/users`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
