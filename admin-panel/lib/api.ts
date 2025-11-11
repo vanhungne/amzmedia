@@ -4,7 +4,7 @@ export interface User {
   id: number;
   username: string;
   email: string | null;
-  role: 'admin' | 'user';
+  role: 'admin' | 'user' | 'manager';
   is_active: boolean;
   total_keys_received: number;
   total_keys_used: number;

@@ -3,12 +3,13 @@
 import Layout from '@/components/Layout';
 import SpaceLoader from '@/components/SpaceLoader';
 import { useState, useEffect } from 'react';
-import { getProjects, createProject, updateProject, deleteProject, type Project } from '@/lib/api';
+import { getProjects, createProject, updateProject, deleteProject, getCurrentUser, type Project, type User } from '@/lib/api';
 import { Plus, Edit, Trash2, X, Sparkles, FolderOpen } from 'lucide-react';
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState<User | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [formData, setFormData] = useState({
@@ -21,8 +22,18 @@ export default function ProjectsPage() {
   });
 
   useEffect(() => {
+    loadUser();
     loadProjects();
   }, []);
+
+  const loadUser = async () => {
+    try {
+      const userData = await getCurrentUser();
+      setUser(userData);
+    } catch (err) {
+      console.error('Failed to load user:', err);
+    }
+  };
 
   const loadProjects = async () => {
     try {
@@ -99,10 +110,12 @@ export default function ProjectsPage() {
             </h1>
             <p className="text-gray-700 font-medium">Quản lý các dự án và cấu hình</p>
           </div>
-          <button onClick={handleCreate} className="btn btn-primary relative z-10">
-            <Plus className="w-5 h-5 relative z-10" />
-            <span className="relative z-10">Tạo Project Mới</span>
-          </button>
+          {user?.role !== 'manager' && (
+            <button onClick={handleCreate} className="btn btn-primary relative z-10">
+              <Plus className="w-5 h-5 relative z-10" />
+              <span className="relative z-10">Tạo Project Mới</span>
+            </button>
+          )}
         </div>
 
         {loading ? (
@@ -157,18 +170,25 @@ export default function ProjectsPage() {
                       <div className="text-sm text-gray-500">{project.created_by_username || '-'}</div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                      <button
-                        onClick={() => handleEdit(project)}
-                        className="text-primary-600 hover:text-primary-900 mr-4"
-                      >
-                        <Edit className="w-4 h-4 inline" />
-                      </button>
-                      <button
-                        onClick={() => handleDelete(project.id)}
-                        className="text-red-600 hover:text-red-900"
-                      >
-                        <Trash2 className="w-4 h-4 inline" />
-                      </button>
+                      {user?.role !== 'manager' && (
+                        <>
+                          <button
+                            onClick={() => handleEdit(project)}
+                            className="text-primary-600 hover:text-primary-900 mr-4"
+                          >
+                            <Edit className="w-4 h-4 inline" />
+                          </button>
+                          <button
+                            onClick={() => handleDelete(project.id)}
+                            className="text-red-600 hover:text-red-900"
+                          >
+                            <Trash2 className="w-4 h-4 inline" />
+                          </button>
+                        </>
+                      )}
+                      {user?.role === 'manager' && (
+                        <span className="text-gray-400 text-xs">Chỉ xem</span>
+                      )}
                     </td>
                   </tr>
                 ))}

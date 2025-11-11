@@ -2186,7 +2186,14 @@ class ScriptImportDialog(QDialog):
             try:
                 # Use first Groq key
                 groq_key = self.groq_keys[0]
+                
+                # Update status: đang tạo prompts
+                QTimer.singleShot(0, lambda: self.status_label.setText(f"🤖 Analyzing script with Groq AI... Generating prompts 1/{num_parts}..."))
+                
                 prompts = analyze_script_with_groq(script, num_parts, groq_key, self.custom_system_prompt)
+                
+                # Update status: hoàn thành
+                QTimer.singleShot(0, lambda: self.status_label.setText(f"✅ Generated {len(prompts)} prompts successfully!"))
                 
                 # Success
                 QTimer.singleShot(0, lambda: self.on_success(prompts))
@@ -2723,9 +2730,78 @@ class PromptRow(QWidget):
             self.main_preview.mousePressEvent = lambda e: self._preview_fullscreen()
     
     def _preview_fullscreen(self):
-        """Open fullscreen preview"""
+        """Open fullscreen preview với điều hướng giữa các prompt"""
         if 0 <= self.current_preview_index < len(self.saved_paths):
             try:
+                # Thu thập tất cả hình ảnh từ tất cả các rows
+                all_images = []
+                if hasattr(self.controller, 'rows'):
+                    for row in self.controller.rows:
+                        if hasattr(row, 'saved_paths') and row.saved_paths:
+                            for img_path in row.saved_paths:
+                                if img_path and img_path.exists():
+                                    all_images.append(str(img_path))
+                
+                if not all_images:
+                    # Fallback: chỉ hiển thị hình hiện tại
+                    pixmap = QPixmap(str(self.saved_paths[self.current_preview_index]))
+                    lightbox = ImageLightbox(pixmap, self)
+                    lightbox.exec()
+                    return
+                
+                # Tìm index của hình hiện tại trong danh sách tất cả hình
+                current_image_path = str(self.saved_paths[self.current_preview_index])
+                try:
+                    current_index = all_images.index(current_image_path)
+                except ValueError:
+                    current_index = 0
+                
+                # Import ImageNavigationDialog từ GenVideoPro
+                try:
+                    import sys
+                    ImageNavigationDialog = None
+                    
+                    # Thử import từ module đã load (GenVideoPro đã được import khi app chạy)
+                    if 'GenVideoPro' in sys.modules:
+                        gen_video_pro = sys.modules['GenVideoPro']
+                        if hasattr(gen_video_pro, 'ImageNavigationDialog'):
+                            ImageNavigationDialog = gen_video_pro.ImageNavigationDialog
+                    
+                    # Nếu chưa có, thử import trực tiếp
+                    if ImageNavigationDialog is None:
+                        try:
+                            from GenVideoPro import ImageNavigationDialog
+                        except ImportError:
+                            pass
+                    
+                    # Nếu vẫn không có, thử import từ file trực tiếp
+                    if ImageNavigationDialog is None:
+                        try:
+                            import importlib.util
+                            gen_video_pro_path = Path(__file__).parent / "GenVideoPro.py"
+                            if gen_video_pro_path.exists():
+                                spec = importlib.util.spec_from_file_location("GenVideoPro", gen_video_pro_path)
+                                if spec and spec.loader:
+                                    gen_video_pro = importlib.util.module_from_spec(spec)
+                                    spec.loader.exec_module(gen_video_pro)
+                                    if hasattr(gen_video_pro, 'ImageNavigationDialog'):
+                                        ImageNavigationDialog = gen_video_pro.ImageNavigationDialog
+                        except Exception:
+                            pass
+                    
+                    # Nếu tìm thấy dialog class, sử dụng nó
+                    if ImageNavigationDialog is not None:
+                        dialog = ImageNavigationDialog(self, all_images, current_index)
+                        dialog.exec()
+                        return
+                    else:
+                        print("[Image Navigation] ImageNavigationDialog not found, using fallback")
+                except Exception as import_error:
+                    print(f"[Image Navigation] Import error: {import_error}, using fallback")
+                    import traceback
+                    traceback.print_exc()
+                
+                # Fallback: dùng ImageLightbox cũ nếu không import được
                 pixmap = QPixmap(str(self.saved_paths[self.current_preview_index]))
                 lightbox = ImageLightbox(pixmap, self)
                 lightbox.exec()
@@ -3850,6 +3926,9 @@ class ImageGeneratorTab(QWidget):
                 print(f"[WORKER] Script preview: {script[:200]}...")
                 print(f"[WORKER] Using API key: {worker_api_key[:20]}...")
                 
+                # Update status: đang phân tích
+                QTimer.singleShot(0, lambda: self.set_status(f"🤖 Analyzing script with {worker_provider} ({worker_model})... Generating {num_parts} prompts..."))
+                
                 # Get custom system prompt from current project (if available)
                 custom_prompt = ""
                 if self.project_manager and self.project_manager.current_project:
@@ -3864,17 +3943,26 @@ class ImageGeneratorTab(QWidget):
                 # Call appropriate AI function based on provider
                 prompts = None
                 if worker_provider == "ChatGPT":
+                    # Update status: đang tạo prompts với ChatGPT
+                    QTimer.singleShot(0, lambda: self.set_status(f"🤖 Analyzing script with {worker_provider} ({worker_model})... Generating prompts 1/{num_parts}..."))
                     prompts = analyze_script_with_openai(script, num_parts, worker_api_key, worker_model, custom_prompt)
                     print(f"[WORKER] Got {len(prompts)} prompts from ChatGPT ({worker_model})")
                 elif worker_provider == "Gemini":
+                    # Update status: đang tạo prompts với Gemini
+                    QTimer.singleShot(0, lambda: self.set_status(f"🤖 Analyzing script with {worker_provider} ({worker_model})... Generating prompts 1/{num_parts}..."))
                     prompts = analyze_script_with_gemini(script, num_parts, worker_api_key, worker_model, custom_prompt)
                     print(f"[WORKER] Got {len(prompts)} prompts from Gemini ({worker_model})")
                 else:  # Groq (default)
+                    # Update status: đang tạo prompts với Groq
+                    QTimer.singleShot(0, lambda: self.set_status(f"🤖 Analyzing script with {worker_provider}... Generating prompts 1/{num_parts}..."))
                     prompts = analyze_script_with_groq(script, num_parts, worker_api_key, custom_prompt)
                     print(f"[WORKER] Got {len(prompts)} prompts from Groq")
                 
                 if not prompts:
                     raise Exception(f"No prompts generated from {worker_provider}")
+                
+                # Update status: hoàn thành
+                QTimer.singleShot(0, lambda: self.set_status(f"✅ Generated {len(prompts)} prompts successfully!"))
                 
                 # Success - emit signal to update UI safely from main thread
                 self.script_analysis_success.emit(prompts)

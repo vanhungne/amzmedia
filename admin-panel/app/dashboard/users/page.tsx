@@ -15,7 +15,7 @@ export default function UsersPage() {
     username: '',
     email: '',
     password: '',
-    role: 'user' as 'admin' | 'user',
+    role: 'user' as 'admin' | 'user' | 'manager',
     is_active: true,
   });
 
@@ -369,10 +369,11 @@ export default function UsersPage() {
                   <select
                     className="input"
                     value={formData.role}
-                    onChange={(e) => setFormData({ ...formData, role: e.target.value as 'admin' | 'user' })}
+                    onChange={(e) => setFormData({ ...formData, role: e.target.value as 'admin' | 'user' | 'manager' })}
                   >
                     <option value="user">User</option>
                     <option value="admin">Admin</option>
+                    <option value="manager">Manager</option>
                   </select>
                 </div>
 

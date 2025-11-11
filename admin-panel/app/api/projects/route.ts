@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAdmin } from '@/lib/middleware';
+import { requireAdmin, requireAuth } from '@/lib/middleware';
 import { getDb } from '@/lib/db';
 import sql from 'mssql';
 import { v4 as uuidv4 } from 'uuid';
@@ -80,7 +80,9 @@ async function createProject(req: NextRequest) {
   }
 }
 
-export const GET = requireAdmin(getProjects);
+// Manager và admin đều có thể xem projects
+export const GET = requireAuth(getProjects, ['admin', 'user', 'manager']);
+// Chỉ admin mới có thể tạo projects
 export const POST = requireAdmin(createProject);
 
 

@@ -42,7 +42,8 @@ async function getProjectsForTool(req: NextRequest) {
   }
 }
 
-export const GET = requireAuth(getProjectsForTool);
+// Manager và admin đều có thể xem projects
+export const GET = requireAuth(getProjectsForTool, ['admin', 'manager', 'user']);
 
 /**
  * POST /api/tool/projects

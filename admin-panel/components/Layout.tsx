@@ -46,16 +46,23 @@ export default function Layout({ children }: LayoutProps) {
     return null; // No loading screen, load silently
   }
 
-  const navItems = [
-    { href: '/dashboard', label: 'Dashboard', icon: Settings, desc: 'Tổng quan' },
-    { href: '/dashboard/projects', label: 'Projects', icon: FolderOpen, desc: 'Quản lý dự án' },
-    { href: '/dashboard/users', label: 'Users', icon: Users, desc: 'Quản lý người dùng' },
-    { href: '/dashboard/elevenlabs', label: 'ElevenLabs', icon: Key, desc: 'API Keys' },
-    { href: '/dashboard/openai', label: 'OpenAI', icon: Key, desc: 'OpenAI Keys' },
-    { href: '/dashboard/gemini', label: 'Gemini', icon: ImageIcon, desc: 'Gemini Keys' },
-    { href: '/dashboard/proxy', label: 'Proxy', icon: Network, desc: 'Proxy Keys' },
-    { href: '/dashboard/activity', label: 'Activity', icon: Activity, desc: 'Lịch sử hoạt động' },
+  // Manager chỉ thấy Projects, các role khác thấy tất cả
+  const allNavItems = [
+    { href: '/dashboard', label: 'Dashboard', icon: Settings, desc: 'Tổng quan', roles: ['admin', 'user'] },
+    { href: '/dashboard/projects', label: 'Projects', icon: FolderOpen, desc: 'Quản lý dự án', roles: ['admin', 'user', 'manager'] },
+    { href: '/dashboard/users', label: 'Users', icon: Users, desc: 'Quản lý người dùng', roles: ['admin', 'user'] },
+    { href: '/dashboard/elevenlabs', label: 'ElevenLabs', icon: Key, desc: 'API Keys', roles: ['admin', 'user'] },
+    { href: '/dashboard/openai', label: 'OpenAI', icon: Key, desc: 'OpenAI Keys', roles: ['admin', 'user'] },
+    { href: '/dashboard/gemini', label: 'Gemini', icon: ImageIcon, desc: 'Gemini Keys', roles: ['admin', 'user'] },
+    { href: '/dashboard/proxy', label: 'Proxy', icon: Network, desc: 'Proxy Keys', roles: ['admin', 'user'] },
+    { href: '/dashboard/activity', label: 'Activity', icon: Activity, desc: 'Lịch sử hoạt động', roles: ['admin', 'user'] },
   ];
+  
+  // Filter nav items based on user role
+  const navItems = allNavItems.filter(item => {
+    if (!user?.role) return false;
+    return item.roles.includes(user.role);
+  });
 
   return (
     <div className="min-h-screen relative">

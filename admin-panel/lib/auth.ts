@@ -10,7 +10,7 @@ export interface User {
   id: number;
   username: string;
   email: string | null;
-  role: 'admin' | 'user';
+  role: 'admin' | 'user' | 'manager';
   is_active: boolean;
   created_at: Date;
 }
@@ -43,7 +43,7 @@ export async function createUser(
   username: string,
   password: string,
   email: string | null = null,
-  role: 'admin' | 'user' = 'user'
+  role: 'admin' | 'user' | 'manager' = 'user'
 ): Promise<User> {
   const db = await getDb();
   const passwordHash = await hashPassword(password);

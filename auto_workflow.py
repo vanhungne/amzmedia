@@ -117,6 +117,9 @@ class AutoWorkflowOrchestrator(QObject):
             print(f"[AUTO WORKFLOW] Using model from project: {model}")
         
         self.step_changed.emit(f"🤖 Analyzing script with {provider} ({model})...")
+        # Start voice generation in parallel (không cần chờ prompts)
+        QTimer.singleShot(100, self.generate_voice)
+        # Start script analysis for prompts (chạy song song với voice)
         self.parse_script_with_ai(provider, model)
     
     def create_folder_structure(self) -> Path:
@@ -253,10 +256,12 @@ class AutoWorkflowOrchestrator(QObject):
                 
                 if prompts:
                     self.prompts = prompts
-                    # Continue to voice generation first, then images
+                    # Prompts ready - voice đã chạy song song rồi, giờ chỉ cần generate images
                     self.step_changed.emit(f"✅ Generated {len(prompts)} prompts")
-                    print("[AUTO WORKFLOW] Invoking generate_voice on main thread")
-                    QMetaObject.invokeMethod(self, "generate_voice", Qt.QueuedConnection)
+                    print("[AUTO WORKFLOW] Prompts ready, checking if voice is done...")
+                    # Voice đã được start song song, giờ chỉ cần chờ và generate images
+                    # Kiểm tra xem voice đã xong chưa, nếu chưa thì đợi một chút
+                    QTimer.singleShot(1000, self.check_and_generate_images)
                 else:
                     self.workflow_error.emit(f"Failed to generate prompts with {provider}")
                     
@@ -408,9 +413,10 @@ class AutoWorkflowOrchestrator(QObject):
             print(f"[GENERATE_VOICE] Starting generation for {len(target)} chunks")
             audio_widget._start_generation(target, auto_mode=True)
             
-            # Continue to images after a short delay (voice generation runs in background)
-            print("[GENERATE_VOICE] Scheduling image generation in 2 seconds")
-            QTimer.singleShot(2000, self.generate_images)
+            # Voice generation đã bắt đầu, không cần chờ nữa
+            # Images sẽ được generate sau khi prompts ready (từ parse_script_with_ai)
+            print("[GENERATE_VOICE] Voice generation started, running in background")
+            # Không gọi generate_images ở đây nữa, sẽ được gọi từ check_and_generate_images
             
         except Exception as e:
             print(f"[VOICE ERROR] {e}")
@@ -442,6 +448,19 @@ class AutoWorkflowOrchestrator(QObject):
             chunks.append(current_chunk.strip())
         
         return [c for c in chunks if c]
+    
+    @Slot()
+    def check_and_generate_images(self):
+        """Check if prompts are ready and generate images"""
+        if not self.prompts:
+            # Prompts chưa ready, đợi thêm
+            print("[CHECK IMAGES] Prompts not ready yet, waiting...")
+            QTimer.singleShot(1000, self.check_and_generate_images)
+            return
+        
+        # Prompts ready, generate images
+        print("[CHECK IMAGES] Prompts ready, generating images...")
+        QMetaObject.invokeMethod(self, "generate_images", Qt.QueuedConnection)
     
     @Slot()
     def generate_images(self):

@@ -4188,6 +4188,311 @@ class ImageAnalyzeDialog(QDialog):
 
     def output_prompts(self) -> list[str]:
         return list(self._out_prompts)
+
+class ImageNavigationDialog(QDialog):
+    """Dialog để xem và điều hướng hình ảnh giữa các prompt - Full screen không viền"""
+    def __init__(self, parent=None, image_paths: List[str] = None, current_index: int = 0):
+        super().__init__(parent)
+        self.setWindowTitle("Image Preview")
+        # Full screen, không viền
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+        self.image_paths = image_paths or []
+        self.current_index = max(0, min(current_index, len(self.image_paths) - 1))
+        
+        # Layout chính - không margin, full screen
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # Header: Thông tin prompt - minimal, ở góc trên
+        header_widget = QWidget()
+        header_widget.setStyleSheet("""
+            QWidget {
+                background: rgba(0, 0, 0, 180);
+            }
+        """)
+        header_layout = QHBoxLayout(header_widget)
+        header_layout.setContentsMargins(16, 12, 16, 12)
+        header_layout.setSpacing(12)
+        
+        self.info_label = QLabel()
+        self.info_label.setStyleSheet("""
+            QLabel {
+                font-size: 14px;
+                font-weight: bold;
+                color: white;
+                padding: 6px 12px;
+                background: rgba(0, 0, 0, 120);
+                border-radius: 6px;
+            }
+        """)
+        header_layout.addWidget(self.info_label)
+        header_layout.addStretch()
+        
+        # Close button - nhỏ gọn, ở góc trên
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(32, 32)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(239, 68, 68, 200);
+                color: white;
+                border: none;
+                border-radius: 16px;
+                font-weight: bold;
+                font-size: 16px;
+            }
+            QPushButton:hover {
+                background: rgba(220, 38, 38, 255);
+            }
+        """)
+        close_btn.clicked.connect(self.accept)
+        header_layout.addWidget(close_btn)
+        
+        # Header chỉ hiện khi hover hoặc luôn hiện (có thể tùy chỉnh)
+        main_layout.addWidget(header_widget)
+        
+        # Image display area - full screen, không viền
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setStyleSheet("background: #000000;")
+        self.image_label.setScaledContents(False)
+        main_layout.addWidget(self.image_label, 1)
+        
+        # Navigation buttons - overlay ở dưới, trong suốt
+        nav_widget = QWidget()
+        nav_widget.setStyleSheet("""
+            QWidget {
+                background: rgba(0, 0, 0, 180);
+            }
+        """)
+        nav_layout = QHBoxLayout(nav_widget)
+        nav_layout.setContentsMargins(20, 16, 20, 16)
+        nav_layout.setSpacing(20)
+        nav_layout.addStretch()
+        
+        self.btn_prev = QPushButton("◀ Previous")
+        self.btn_prev.setStyleSheet("""
+            QPushButton {
+                background: rgba(59, 130, 246, 200);
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 12px 24px;
+                font-weight: bold;
+                font-size: 13pt;
+                min-width: 140px;
+            }
+            QPushButton:hover {
+                background: rgba(37, 99, 235, 255);
+            }
+            QPushButton:disabled {
+                background: rgba(156, 163, 175, 150);
+            }
+        """)
+        self.btn_prev.clicked.connect(self.show_previous)
+        nav_layout.addWidget(self.btn_prev)
+        
+        # Index display
+        self.index_label = QLabel()
+        self.index_label.setAlignment(Qt.AlignCenter)
+        self.index_label.setStyleSheet("""
+            QLabel {
+                font-size: 16px;
+                font-weight: bold;
+                color: white;
+                padding: 10px 20px;
+                min-width: 120px;
+                background: rgba(0, 0, 0, 120);
+                border-radius: 8px;
+            }
+        """)
+        nav_layout.addWidget(self.index_label)
+        
+        self.btn_next = QPushButton("Next ▶")
+        self.btn_next.setStyleSheet("""
+            QPushButton {
+                background: rgba(59, 130, 246, 200);
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 12px 24px;
+                font-weight: bold;
+                font-size: 13pt;
+                min-width: 140px;
+            }
+            QPushButton:hover {
+                background: rgba(37, 99, 235, 255);
+            }
+            QPushButton:disabled {
+                background: rgba(156, 163, 175, 150);
+            }
+        """)
+        self.btn_next.clicked.connect(self.show_next)
+        nav_layout.addWidget(self.btn_next)
+        
+        nav_layout.addStretch()
+        main_layout.addWidget(nav_widget)
+        
+        # Keyboard shortcuts
+        from PySide6.QtGui import QShortcut, QKeySequence
+        QShortcut(QKeySequence("Left"), self).activated.connect(self.show_previous)
+        QShortcut(QKeySequence("Right"), self).activated.connect(self.show_next)
+        QShortcut(QKeySequence("Escape"), self).activated.connect(self.accept)
+        
+        # Set full screen
+        screen_size = QApplication.primaryScreen().size()
+        self.resize(screen_size.width(), screen_size.height())
+        
+        # Hiển thị hình đầu tiên
+        self.update_display()
+    
+    def show_previous(self):
+        """Hiển thị hình trước đó"""
+        if self.current_index > 0:
+            self.current_index -= 1
+            self.update_display()
+    
+    def show_next(self):
+        """Hiển thị hình tiếp theo"""
+        if self.current_index < len(self.image_paths) - 1:
+            self.current_index += 1
+            self.update_display()
+    
+    def update_display(self):
+        """Cập nhật hiển thị hình ảnh và thông tin"""
+        if not self.image_paths or self.current_index < 0 or self.current_index >= len(self.image_paths):
+            self.image_label.setText("No image available")
+            self.info_label.setText("No image")
+            self.index_label.setText("0 / 0")
+            self.btn_prev.setEnabled(False)
+            self.btn_next.setEnabled(False)
+            return
+        
+        image_path = self.image_paths[self.current_index]
+        
+        # Cập nhật nút điều hướng
+        self.btn_prev.setEnabled(self.current_index > 0)
+        self.btn_next.setEnabled(self.current_index < len(self.image_paths) - 1)
+        
+        # Cập nhật index label
+        self.index_label.setText(f"{self.current_index + 1} / {len(self.image_paths)}")
+        
+        # Cập nhật info label
+        filename = os.path.basename(image_path) if image_path else "Unknown"
+        self.info_label.setText(f"Prompt {self.current_index + 1}: {filename}")
+        
+        # Load và hiển thị hình ảnh với tỷ lệ 16:9 và xem được full hình - full screen
+        if image_path and os.path.exists(image_path):
+            try:
+                pixmap = QPixmap(image_path)
+                if not pixmap.isNull():
+                    # Tính toán kích thước để fit full screen với tỷ lệ 16:9
+                    screen_size = QApplication.primaryScreen().size()
+                    # Trừ đi không gian cho header và nav (khoảng 120px)
+                    max_width = screen_size.width()
+                    max_height = screen_size.height() - 120
+                    
+                    # Tính kích thước khung 16:9
+                    target_ratio = 16.0 / 9.0
+                    container_width = max_width
+                    container_height = int(container_width / target_ratio)
+                    
+                    # Nếu quá cao, điều chỉnh theo chiều cao
+                    if container_height > max_height:
+                        container_height = max_height
+                        container_width = int(container_height * target_ratio)
+                    
+                    # Đảm bảo kích thước hợp lệ
+                    if container_width <= 0:
+                        container_width = screen_size.width()
+                    if container_height <= 0:
+                        container_height = int(container_width / target_ratio)
+                    
+                    # Scale hình ảnh để fit trong khung 16:9, giữ tỷ lệ gốc (xem được full hình)
+                    src_w = pixmap.width()
+                    src_h = pixmap.height()
+                    
+                    if src_w <= 0 or src_h <= 0:
+                        self.image_label.setText("❌ Invalid image size")
+                        return
+                    
+                    src_ratio = src_w / src_h
+                    
+                    # Tính kích thước scale để fit trong khung 16:9 mà không bị crop
+                    # Scale để fit theo chiều rộng hoặc chiều cao, tùy vào tỷ lệ
+                    if src_ratio > target_ratio:
+                        # Hình rộng hơn 16:9 -> fit theo chiều cao của container
+                        scaled_h = container_height
+                        scaled_w = int(scaled_h * src_ratio)
+                        # Nếu vượt quá chiều rộng, scale lại
+                        if scaled_w > container_width:
+                            scaled_w = container_width
+                            scaled_h = int(scaled_w / src_ratio)
+                    else:
+                        # Hình cao hơn hoặc bằng 16:9 -> fit theo chiều rộng của container
+                        scaled_w = container_width
+                        scaled_h = int(scaled_w / src_ratio)
+                        # Nếu vượt quá chiều cao, scale lại
+                        if scaled_h > container_height:
+                            scaled_h = container_height
+                            scaled_w = int(scaled_h * src_ratio)
+                    
+                    # Đảm bảo kích thước scale hợp lệ
+                    if scaled_w <= 0:
+                        scaled_w = 1
+                    if scaled_h <= 0:
+                        scaled_h = 1
+                    
+                    # Scale hình với smooth transformation
+                    scaled_pixmap = pixmap.scaled(
+                        scaled_w, scaled_h,
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation
+                    )
+                    
+                    if scaled_pixmap.isNull():
+                        self.image_label.setText("❌ Failed to scale image")
+                        return
+                    
+                    # Tạo pixmap nền đen 16:9 và đặt hình vào giữa (letterboxing)
+                    final_pixmap = QPixmap(container_width, container_height)
+                    if final_pixmap.isNull():
+                        self.image_label.setText("❌ Failed to create canvas")
+                        return
+                    
+                    final_pixmap.fill(QColor(0, 0, 0))  # Nền đen
+                    
+                    # Vẽ hình vào giữa
+                    try:
+                        painter = QPainter(final_pixmap)
+                        if painter.isActive():
+                            x_offset = (container_width - scaled_w) // 2
+                            y_offset = (container_height - scaled_h) // 2
+                            painter.drawPixmap(x_offset, y_offset, scaled_pixmap)
+                            painter.end()
+                        else:
+                            # Fallback: dùng setPixmap trực tiếp nếu painter không hoạt động
+                            self.image_label.setPixmap(scaled_pixmap)
+                            self.image_label.setFixedSize(scaled_w, scaled_h)
+                            return
+                    except Exception as paint_error:
+                        print(f"[Image Navigation] Paint error: {paint_error}")
+                        # Fallback: dùng setPixmap trực tiếp
+                        self.image_label.setPixmap(scaled_pixmap)
+                        self.image_label.setFixedSize(scaled_w, scaled_h)
+                        return
+                    
+                    self.image_label.setPixmap(final_pixmap)
+                    self.image_label.setMinimumSize(container_width, container_height)
+                else:
+                    self.image_label.setText("❌ Cannot load image")
+            except Exception as e:
+                error_msg = str(e)
+                print(f"[Image Navigation] Display error: {error_msg}")
+                self.image_label.setText(f"❌ Error: {error_msg}")
+        else:
+            self.image_label.setText("❌ Image not found")
+
 class DefaultSpecDialog(QDialog):
     def __init__(self, parent=None, current_spec: str = ""):
         super().__init__(parent)
@@ -4553,6 +4858,16 @@ class MainWindow(QMainWindow):
     def show_prompt_guide(self):
         dlg = PromptGuideDialog(self)
         dlg.exec()
+    
+    def eventFilter(self, obj, ev):
+        """Event filter to handle table viewport resize"""
+        if hasattr(self, 'tbl_img') and obj is self.tbl_img.viewport() and ev.type() == QEvent.Resize:
+            # Debounce resize events using timer
+            if hasattr(self, '_table_resize_timer'):
+                self._table_resize_timer.stop()
+                self._table_resize_timer.start(150)  # Wait 150ms after last resize
+        return super().eventFilter(obj, ev) if hasattr(super(), 'eventFilter') else False
+    
     def _periodic_cleanup(self):
         """Cleanup memory mỗi 5 phút"""
         # Cleanup video widgets không còn visible
@@ -6217,14 +6532,7 @@ class MainWindow(QMainWindow):
             "🚀 Start Auto Workflow?",
             f"📁 Project: {project.name}\n"
             f"📜 Script: {os.path.basename(script_path)}\n"
-            f"🎨 Images: {num_prompts} prompts (random 12-24)\n\n"
-            f"This will automatically:\n"
-            f"1. Create folder: C:\\WorkFlow\\{project.name}\\\n"
-            f"2. Parse script with AI (set in Image Generator tab)\n"
-            f"3. Generate {num_prompts} image prompts\n"
-            f"4. Switch to Image tab\n"
-            f"5. Start generating images\n\n"
-            f"Continue?",
+            f"🎨 Images: {num_prompts} prompts (random 12-24)",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes
         )
@@ -6621,12 +6929,21 @@ class MainWindow(QMainWindow):
             ["Select", "STT", "Prompt", "Image", "Status", "Video", "Open", "Regen", "Delete"]
         )
         header = self.tbl_img.horizontalHeader()
-        # Allow resizing for all columns
-        header.setSectionResizeMode(QHeaderView.Interactive)
+        # Set resize modes: Fixed for small columns, Interactive for resizable, Stretch for flexible
+        header.setSectionResizeMode(0, QHeaderView.Fixed)  # Select - fixed
+        header.setSectionResizeMode(1, QHeaderView.Fixed)  # STT - fixed
+        header.setSectionResizeMode(2, QHeaderView.Stretch)  # Prompt - stretch to fill space
+        header.setSectionResizeMode(3, QHeaderView.Interactive)  # Image - resizable
+        header.setSectionResizeMode(4, QHeaderView.Interactive)  # Status - resizable
+        header.setSectionResizeMode(5, QHeaderView.Interactive)  # Video - resizable, maintains 16:9
+        header.setSectionResizeMode(6, QHeaderView.Fixed)  # Open - fixed
+        header.setSectionResizeMode(7, QHeaderView.Fixed)  # Regen - fixed
+        header.setSectionResizeMode(8, QHeaderView.Fixed)  # Delete - fixed
+        
         # Set initial column widths
         self.tbl_img.setColumnWidth(0, 60)
         self.tbl_img.setColumnWidth(1, 40)
-        self.tbl_img.setColumnWidth(2, 450)
+        self.tbl_img.setColumnWidth(2, 450)  # Prompt - will stretch
         self.tbl_img.setColumnWidth(3, 180)
         self.tbl_img.setColumnWidth(4, 145)
         self.tbl_img.setColumnWidth(5, 256)  # Video column - will maintain 16:9
@@ -6636,6 +6953,9 @@ class MainWindow(QMainWindow):
         
         # Connect signal to maintain 16:9 aspect ratio for Video column
         header.sectionResized.connect(self._on_video_column_resized)
+        
+        # Store initial video column width for reference
+        self._video_col_base_width = 256
         
         vheader = self.tbl_img.verticalHeader()
         vheader.setSectionResizeMode(QHeaderView.Fixed)
@@ -6652,6 +6972,16 @@ class MainWindow(QMainWindow):
         self.tbl_img.setHorizontalScrollMode(QAbstractItemView.ScrollPerItem)
         self.tbl_img.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tbl_img.customContextMenuRequested.connect(self._on_img_tbl_context)
+        
+        # Connect resize event to adjust video column when table size changes
+        # Use a timer to debounce resize events
+        self._table_resize_timer = QTimer()
+        self._table_resize_timer.setSingleShot(True)
+        self._table_resize_timer.timeout.connect(self._adjust_video_column_for_table_size)
+        
+        # Install event filter on table viewport to detect resize
+        self.tbl_img.viewport().installEventFilter(self)
+        
         wrapper.addWidget(self.tbl_img)
 
         # Initialize state
@@ -6789,6 +7119,10 @@ class MainWindow(QMainWindow):
         if logical_index != 5:  # Video column is index 5
             return
         
+        # Update stored base width
+        if hasattr(self, '_video_col_base_width'):
+            self._video_col_base_width = new_size
+        
         # Calculate height based on 16:9 aspect ratio
         # Account for padding (12px total: 6px top + 6px bottom)
         video_width = new_size - 12  # Subtract horizontal padding
@@ -6804,6 +7138,51 @@ class MainWindow(QMainWindow):
             
             # Update row height to maintain aspect ratio
             self.tbl_img.verticalHeader().resizeSection(row, row_height)
+    
+    def _adjust_video_column_for_table_size(self):
+        """Adjust Video column width when table size changes to maintain 16:9"""
+        if not hasattr(self, 'tbl_img') or not self.tbl_img:
+            return
+        
+        # Get current table width
+        table_width = self.tbl_img.viewport().width()
+        if table_width <= 0:
+            return
+        
+        # Calculate available width (subtract fixed columns)
+        fixed_width = (
+            self.tbl_img.columnWidth(0) +  # Select
+            self.tbl_img.columnWidth(1) +  # STT
+            self.tbl_img.columnWidth(3) +  # Image
+            self.tbl_img.columnWidth(4) +  # Status
+            self.tbl_img.columnWidth(6) +  # Open
+            self.tbl_img.columnWidth(7) +  # Regen
+            self.tbl_img.columnWidth(8)    # Delete
+        )
+        
+        # Get Prompt column width (stretch column)
+        prompt_width = self.tbl_img.columnWidth(2)
+        
+        # Calculate optimal video width (try to maintain aspect ratio)
+        # Use a reasonable default if table is too small
+        available_width = table_width - fixed_width - prompt_width
+        
+        # Ensure minimum and maximum video column width
+        min_video_width = 200
+        max_video_width = 600
+        optimal_video_width = max(min_video_width, min(max_video_width, available_width - 20))
+        
+        # Only adjust if significantly different to avoid infinite loops
+        current_video_width = self.tbl_img.columnWidth(5)
+        if abs(current_video_width - optimal_video_width) > 10:
+            # Temporarily disconnect signal to avoid recursion
+            header = self.tbl_img.horizontalHeader()
+            header.sectionResized.disconnect(self._on_video_column_resized)
+            self.tbl_img.setColumnWidth(5, optimal_video_width)
+            header.sectionResized.connect(self._on_video_column_resized)
+            
+            # Manually trigger resize handler
+            self._on_video_column_resized(5, current_video_width, optimal_video_width)
     
     def _on_img_tbl_clicked(self, row: int, col: int):
         # Cột 2 là "Prompt"
@@ -6988,6 +7367,7 @@ class MainWindow(QMainWindow):
         icon_label = QLabel()
         icon_label.setAlignment(Qt.AlignCenter)
         icon_label.setFixedSize(160, 80)
+        icon_label.setCursor(Qt.PointingHandCursor)
         
         if path and os.path.exists(path):
             pm = QPixmap(path)
@@ -6999,6 +7379,9 @@ class MainWindow(QMainWindow):
                         background: #f9fafb;
                         border: 1px solid #e5e7eb;
                         border-radius: 6px;
+                    }
+                    QLabel:hover {
+                        border: 2px solid #3b82f6;
                     }
                 """)
             else:
@@ -7021,6 +7404,36 @@ class MainWindow(QMainWindow):
                     font-size: 40px;
                 }
             """)
+        
+        # Thêm click handler để mở dialog điều hướng
+        def on_image_clicked(event):
+            # Thu thập tất cả hình ảnh từ tất cả prompts
+            all_images = []
+            for ipr in self.image_prompts:
+                if ipr.start_image and os.path.exists(ipr.start_image):
+                    all_images.append(ipr.start_image)
+            
+            if not all_images:
+                QMessageBox.information(self, "Info", "Không có hình ảnh nào để xem.")
+                return
+            
+            # Tìm index của hình hiện tại
+            current_image_path = path if path and os.path.exists(path) else None
+            current_index = 0
+            if current_image_path:
+                try:
+                    current_index = all_images.index(current_image_path)
+                except ValueError:
+                    # Nếu không tìm thấy, dùng row_idx làm index
+                    current_index = min(row_idx, len(all_images) - 1)
+            else:
+                current_index = min(row_idx, len(all_images) - 1)
+            
+            # Mở dialog điều hướng
+            dialog = ImageNavigationDialog(self, all_images, current_index)
+            dialog.exec()
+        
+        icon_label.mousePressEvent = on_image_clicked
         
         cap = QLabel(os.path.basename(path) if path else "—")
         cap.setAlignment(Qt.AlignCenter)

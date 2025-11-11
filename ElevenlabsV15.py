@@ -1658,6 +1658,37 @@ class ElevenLabsGUI(QMainWindow):
         
         params_layout.addLayout(params_grid)
         
+        # V3 Generations row (only visible for V3 model)
+        v3_gen_row = QHBoxLayout()
+        self.v3_generations_label = QLabel("V3 Generations:")
+        self.v3_generations_label.setStyleSheet("font-weight: 600; color: #1f2937; font-size: 9pt;")
+        self.v3_generations_label.setFixedWidth(100)
+        self.v3_generations_label.setVisible(False)  # Hidden by default
+        v3_gen_row.addWidget(self.v3_generations_label)
+        
+        self.v3_generations_spin = QSpinBox()
+        self.v3_generations_spin.setRange(1, 10)
+        self.v3_generations_spin.setValue(1)
+        self.v3_generations_spin.setFixedHeight(28)
+        self.v3_generations_spin.setMaximumWidth(100)
+        self.v3_generations_spin.setVisible(False)  # Hidden by default
+        self.v3_generations_spin.setStyleSheet("""
+            QSpinBox {
+                padding: 4px 8px;
+                font-size: 9pt;
+                border: 2px solid #cbd5e1;
+                border-radius: 4px;
+                background: white;
+                color: #1f2937;
+            }
+            QSpinBox:hover {
+                border-color: #F87B1B;
+            }
+        """)
+        v3_gen_row.addWidget(self.v3_generations_spin)
+        v3_gen_row.addStretch()
+        params_layout.addLayout(v3_gen_row)
+        
         # Bottom row: Language + Speaker Boost
         bottom_row = QHBoxLayout()
         bottom_row.setSpacing(10)
@@ -2401,6 +2432,12 @@ class ElevenLabsGUI(QMainWindow):
         # Show/hide V3 tips
         self.v3_tips_label.setVisible(is_v3)
         
+        # Show/hide V3 generations control
+        if hasattr(self, 'v3_generations_label'):
+            self.v3_generations_label.setVisible(is_v3)
+        if hasattr(self, 'v3_generations_spin'):
+            self.v3_generations_spin.setVisible(is_v3)
+        
         if is_v3:
             # V3: Chỉ show Stability, ẩn hết còn lại
             self.speed_label.setVisible(False)
@@ -2713,7 +2750,11 @@ class ElevenLabsGUI(QMainWindow):
         # V3 Alpha Warning (skip in auto mode)
         model_name = self.model_combo.currentText()
         if model_name == "V3 (Alpha)" and not auto_mode:
-            num_gen = self.v3_generations_spin.value()
+            # Get num_gen with fallback if widget doesn't exist
+            if hasattr(self, 'v3_generations_spin'):
+                num_gen = self.v3_generations_spin.value()
+            else:
+                num_gen = 1  # Default fallback
             stability = self.stability_combo.currentData()
             
             # Determine mode name
@@ -2886,7 +2927,10 @@ class ElevenLabsGUI(QMainWindow):
                             self.log(f"🔍 DEBUG: similarity={self.similarity_spin.value()}, style={self.style_spin.value()}, boost={self.speaker_boost_check.isChecked()}")
                     
                     # V3 Multiple Generations Support
-                    num_generations = self.v3_generations_spin.value() if is_v3 else 1
+                    if is_v3 and hasattr(self, 'v3_generations_spin'):
+                        num_generations = self.v3_generations_spin.value()
+                    else:
+                        num_generations = 1
                     
                     if is_v3 and num_generations > 1:
                         self.log(f"🎭 V3: Generating {num_generations} versions for chunk {chunk['number']}")

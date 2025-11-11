@@ -11,7 +11,7 @@ export interface AuthRequest extends NextRequest {
 
 export function requireAuth(
   handler: (req: AuthRequest, context?: any) => Promise<NextResponse>,
-  roles: ('admin' | 'user')[] = ['admin', 'user']
+  roles: ('admin' | 'user' | 'manager')[] = ['admin', 'user', 'manager']
 ) {
   return async (req: NextRequest, context?: any): Promise<NextResponse> => {
     const token = req.headers.get('authorization')?.replace('Bearer ', '') ||
@@ -26,7 +26,7 @@ export function requireAuth(
       return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
     }
     
-    if (!roles.includes(decoded.role as 'admin' | 'user')) {
+    if (!roles.includes(decoded.role as 'admin' | 'user' | 'manager')) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
     
@@ -39,5 +39,11 @@ export function requireAdmin(
   handler: (req: AuthRequest, context?: any) => Promise<NextResponse>
 ) {
   return requireAuth(handler, ['admin']);
+}
+
+export function requireManager(
+  handler: (req: AuthRequest, context?: any) => Promise<NextResponse>
+) {
+  return requireAuth(handler, ['admin', 'manager']);
 }
 

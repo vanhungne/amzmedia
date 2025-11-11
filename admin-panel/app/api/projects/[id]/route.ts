@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAdmin } from '@/lib/middleware';
+import { requireAdmin, requireAuth } from '@/lib/middleware';
 import { getDb } from '@/lib/db';
 import sql from 'mssql';
 
@@ -113,7 +113,9 @@ async function deleteProject(req: NextRequest, { params }: { params: Promise<{ i
   }
 }
 
-export const GET = requireAdmin(getProject);
+// Manager và admin đều có thể xem project
+export const GET = requireAuth(getProject, ['admin', 'user', 'manager']);
+// Chỉ admin mới có thể sửa/xóa projects
 export const PUT = requireAdmin(updateProject);
 export const DELETE = requireAdmin(deleteProject);
 
