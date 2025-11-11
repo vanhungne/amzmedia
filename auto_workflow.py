@@ -203,14 +203,27 @@ class AutoWorkflowOrchestrator(QObject):
                         return
                     
                     if analyze_script_with_openai:
+                        # Get GPT-5 parameters from Image tab UI if available
+                        verbosity = "medium"
+                        
+                        # Try to get from Image tab widget
+                        image_widget = self.get_image_generator_widget()
+                        if image_widget:
+                            if hasattr(image_widget, 'verbosity_cb') and image_widget.verbosity_cb.isVisible():
+                                verbosity = image_widget.verbosity_cb.currentText()
+                            # Fallback to settings if UI not available
+                            elif hasattr(image_widget, 'settings'):
+                                verbosity = image_widget.settings.get("gpt5_verbosity", "medium")
+                        
                         prompts = analyze_script_with_openai(
                             script=self.script_text,
                             num_parts=num_prompts,
                             openai_api_key=openai_keys[0],
                             model=model,
-                            custom_system_prompt=custom_prompt
+                            custom_system_prompt=custom_prompt,
+                            verbosity=verbosity
                         )
-                        print(f"[AUTO WORKFLOW] Got {len(prompts)} prompts from ChatGPT ({model})")
+                        print(f"[AUTO WORKFLOW] Got {len(prompts)} prompts from ChatGPT ({model}) with verbosity={verbosity}")
                     else:
                         self.workflow_error.emit("OpenAI integration not available")
                         return
@@ -258,10 +271,15 @@ class AutoWorkflowOrchestrator(QObject):
                     self.prompts = prompts
                     # Prompts ready - voice đã chạy song song rồi, giờ chỉ cần generate images
                     self.step_changed.emit(f"✅ Generated {len(prompts)} prompts")
-                    print("[AUTO WORKFLOW] Prompts ready, checking if voice is done...")
+                    print(f"[AUTO WORKFLOW] Prompts ready ({len(prompts)} prompts), scheduling check_and_generate_images...")
+                    print(f"[AUTO WORKFLOW] self.prompts count: {len(self.prompts) if self.prompts else 0}")
                     # Voice đã được start song song, giờ chỉ cần chờ và generate images
                     # Kiểm tra xem voice đã xong chưa, nếu chưa thì đợi một chút
-                    QTimer.singleShot(1000, self.check_and_generate_images)
+                    # Use QMetaObject to ensure it runs on main thread
+                    from PySide6.QtCore import QMetaObject, Qt
+                    QMetaObject.invokeMethod(self, "check_and_generate_images", Qt.QueuedConnection)
+                    # Also schedule with QTimer as backup
+                    QTimer.singleShot(500, self.check_and_generate_images)
                 else:
                     self.workflow_error.emit(f"Failed to generate prompts with {provider}")
                     
@@ -452,6 +470,7 @@ class AutoWorkflowOrchestrator(QObject):
     @Slot()
     def check_and_generate_images(self):
         """Check if prompts are ready and generate images"""
+        print(f"[CHECK IMAGES] Called. self.prompts: {self.prompts is not None}, count: {len(self.prompts) if self.prompts else 0}")
         if not self.prompts:
             # Prompts chưa ready, đợi thêm
             print("[CHECK IMAGES] Prompts not ready yet, waiting...")
@@ -459,20 +478,25 @@ class AutoWorkflowOrchestrator(QObject):
             return
         
         # Prompts ready, generate images
-        print("[CHECK IMAGES] Prompts ready, generating images...")
-        QMetaObject.invokeMethod(self, "generate_images", Qt.QueuedConnection)
+        print(f"[CHECK IMAGES] ✅ Prompts ready ({len(self.prompts)} prompts), calling generate_images...")
+        # Use QTimer to ensure it runs on main thread
+        QTimer.singleShot(100, self.generate_images)
     
     @Slot()
     def generate_images(self):
         """Auto generate images in Image tab"""
         try:
+            print(f"[GENERATE_IMAGES] Starting... Prompts count: {len(self.prompts) if self.prompts else 0}")
             self.step_changed.emit("🎨 Switching to Image tab...")
             
             # Get image generator widget first
             image_widget = self.get_image_generator_widget()
             if not image_widget:
+                print("[GENERATE_IMAGES] ERROR: Image Generator tab not available")
                 self.workflow_error.emit("Image Generator tab not available")
                 return
+            
+            print(f"[GENERATE_IMAGES] Image widget found: {image_widget}")
             
             # Switch to Image tab
             image_tab_index = self.get_image_tab_index()
@@ -532,6 +556,7 @@ class AutoWorkflowOrchestrator(QObject):
     def validate_voice_id(self, audio_widget, voice_id: str) -> bool:
         """
         Validate if voice ID exists and is accessible via ElevenLabs API
+        Handles manager role accounts that may return 400 for direct voice access
         
         Args:
             audio_widget: ElevenLabs widget with API manager
@@ -560,6 +585,10 @@ class AutoWorkflowOrchestrator(QObject):
         if hasattr(api_manager, 'current_key_index'):
             original_key_index = api_manager.current_key_index
         
+        # Track status codes to detect manager role (400) vs voice not found (404)
+        got_400 = False
+        got_404 = False
+        
         for attempt in range(min(3, len(api_manager.keys) if hasattr(api_manager, 'keys') else 3)):
             try:
                 api_key = api_manager.get_next()
@@ -567,7 +596,7 @@ class AutoWorkflowOrchestrator(QObject):
                     print(f"[VALIDATE VOICE] No API key available for attempt {attempt + 1}")
                     continue
                 
-                # Call ElevenLabs API to get voice details
+                # METHOD 1: Try direct voice access (GET /v1/voices/{voice_id})
                 url = f"https://api.elevenlabs.io/v1/voices/{voice_id}"
                 headers = {
                     "xi-api-key": api_key,
@@ -583,14 +612,44 @@ class AutoWorkflowOrchestrator(QObject):
                     print(f"[VALIDATE VOICE] ✅ Voice {voice_id} exists and is accessible")
                     return True
                 elif response.status_code == 404:
-                    # Restore original key index
-                    if original_key_index is not None and hasattr(api_manager, 'current_key_index'):
-                        api_manager.current_key_index = original_key_index
-                    print(f"[VALIDATE VOICE] ❌ Voice {voice_id} not found (404)")
-                    return False
+                    got_404 = True
+                    print(f"[VALIDATE VOICE] ⚠️ Voice {voice_id} not found (404) with this key")
+                    # Continue to try other keys
+                    continue
                 elif response.status_code == 401:
                     print(f"[VALIDATE VOICE] ⚠️ API key invalid, trying next key...")
                     continue
+                elif response.status_code == 400:
+                    # Status 400 might be manager role restriction
+                    # Try alternative: list all voices and check if voice_id exists
+                    got_400 = True
+                    print(f"[VALIDATE VOICE] ⚠️ Got 400 for direct access (might be manager role), trying list-all-voices method...")
+                    
+                    # METHOD 2: List all voices and check if voice_id is in the list
+                    list_url = "https://api.elevenlabs.io/v1/voices"
+                    list_response = requests.get(list_url, headers=headers, timeout=10)
+                    
+                    if list_response.status_code == 200:
+                        voices_data = list_response.json()
+                        voices_list = voices_data.get('voices', [])
+                        
+                        # Check if voice_id exists in the list
+                        voice_found = any(v.get('voice_id') == voice_id for v in voices_list)
+                        
+                        if voice_found:
+                            # Restore original key index
+                            if original_key_index is not None and hasattr(api_manager, 'current_key_index'):
+                                api_manager.current_key_index = original_key_index
+                            print(f"[VALIDATE VOICE] ✅ Voice {voice_id} found in voices list (manager role access confirmed)")
+                            return True
+                        else:
+                            print(f"[VALIDATE VOICE] ⚠️ Voice {voice_id} not found in voices list")
+                            # Continue to next key
+                            continue
+                    else:
+                        print(f"[VALIDATE VOICE] ⚠️ Failed to list voices (status {list_response.status_code})")
+                        # Continue to next key
+                        continue
                 else:
                     print(f"[VALIDATE VOICE] ⚠️ API returned status {response.status_code}, trying next key...")
                     continue
@@ -603,9 +662,22 @@ class AutoWorkflowOrchestrator(QObject):
         if original_key_index is not None and hasattr(api_manager, 'current_key_index'):
             api_manager.current_key_index = original_key_index
         
-        # If all attempts failed, assume voice is invalid
-        print(f"[VALIDATE VOICE] ❌ Could not validate voice {voice_id} after 3 attempts")
-        return False
+        # Decision logic:
+        # - If we got 404 (voice not found), return False
+        # - If we only got 400 (manager role restriction), allow it (generation will validate)
+        if got_404:
+            print(f"[VALIDATE VOICE] ❌ Voice {voice_id} not found (404) - voice does not exist")
+            return False
+        elif got_400 and not got_404:
+            # Only got 400, no 404 - likely manager role restriction
+            # Voice might still be valid for text-to-speech, allow attempt
+            print(f"[VALIDATE VOICE] ⚠️ Could not validate voice {voice_id} (got 400, likely manager role restriction)")
+            print(f"[VALIDATE VOICE] ⚠️ Allowing attempt - generation endpoint will validate if voice is truly invalid")
+            return True
+        else:
+            # Other errors
+            print(f"[VALIDATE VOICE] ❌ Could not validate voice {voice_id} after 3 attempts")
+            return False
     
     def get_project_abbreviation(self, project_name: str) -> str:
         """

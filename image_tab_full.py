@@ -317,7 +317,26 @@ Return ONLY the JSON object, no other text."""
                     max_output_tokens=2000
                 )
             )
-            content = response.text.strip()
+            # Check if response.text exists before calling strip()
+            if response.text is None:
+                print(f"[CHARACTER EXTRACTION] ⚠️ Gemini returned None response, trying to get text from candidates...")
+                # Try to get text from candidates
+                if hasattr(response, 'candidates') and response.candidates:
+                    candidate = response.candidates[0]
+                    if hasattr(candidate, 'content') and candidate.content:
+                        if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                            content = candidate.content.parts[0].text if hasattr(candidate.content.parts[0], 'text') else ""
+                        else:
+                            content = ""
+                    else:
+                        content = ""
+                else:
+                    content = ""
+                if not content:
+                    print(f"[CHARACTER EXTRACTION] ❌ Could not extract text from Gemini response")
+                    return {"main_characters": [], "supporting_characters": [], "script_summary": ""}
+            else:
+                content = response.text.strip()
         else:
             return {"main_characters": [], "supporting_characters": [], "script_summary": ""}
         
@@ -611,139 +630,297 @@ def clean_prompt_prefix(prompt: str) -> str:
 # ==================== HELPER: PARSE PROMPTS FROM AI RESPONSE ====================
 def parse_prompts_from_response(content: str) -> List[str]:
     """
-    Parse English prompts from AI response.
-    Handles two formats:
-    1. OLD FORMAT (with labels):
-        Scene 1 / Phân cảnh 1
-        **Tóm tắt ngắn:** ... (Vietnamese - skip)
-        **Prompt vẽ ảnh:** 
-        ultra-realistic photo... (English - extract this)
-        **Bản dịch prompt:** ... (Vietnamese - skip)
-    
-    2. NEW FORMAT (clean, prompts only):
-        Ultra-realistic photo, 16:9. A woman...
-        
-        Ultra-realistic photo, 16:9. The same woman...
+    Parse English prompts from AI response with ABSOLUTE ACCURACY.
+    Uses multiple parsing strategies to handle all possible formats.
     """
     import re
     
     prompts = []
+    original_content = content
+    content = content.strip()
+    
+    print(f"[PARSER] Starting parse, content length: {len(content)} chars")
+    
+    # ========== STRATEGY 1: Labeled prompts (old format) ==========
     lines = content.split('\n')
-    
-    print(f"[PARSER] Starting parse, total lines: {len(lines)}")
-    
-    # First, try to find prompts with "**Prompt vẽ ảnh:**" label (old format)
-    i = 0
     found_labeled_prompts = False
     label_count = 0
-    while i < len(lines):
-        line = lines[i].strip()
+    
+    for i, line in enumerate(lines):
+        line_stripped = line.strip()
         
-        # Check if this line contains "**Prompt vẽ ảnh:**" or similar markers
-        if any(marker in line.lower() for marker in ["**prompt vẽ ảnh:**", "**prompt:**", "image prompt:"]):
+        # Check for prompt labels
+        if any(marker in line_stripped.lower() for marker in [
+            "**prompt vẽ ảnh:**", "**prompt:**", "image prompt:", "prompt:", "prompt 1:", "prompt 2:"
+        ]):
             found_labeled_prompts = True
             label_count += 1
-            print(f"[PARSER] Found prompt label #{label_count} at line {i}: {line[:50]}...")
-            # The actual English prompt is on the next non-empty line
-            i += 1
-            while i < len(lines):
-                next_line = lines[i].strip()
+            print(f"[PARSER] Found prompt label #{label_count} at line {i}")
+            
+            # Collect prompt text from next lines
+            prompt_lines = []
+            j = i + 1
+            while j < len(lines):
+                next_line = lines[j].strip()
                 
-                # Skip empty lines
                 if not next_line:
-                    i += 1
+                    j += 1
                     continue
                 
-                # Stop if we hit another section marker (Vietnamese)
+                # Stop at next section marker
                 if any(marker in next_line.lower() for marker in [
-                    "**bản dịch", "**tóm tắt", "**dịch:", "---", "###", "scene ", "phân cảnh"
+                    "**bản dịch", "**tóm tắt", "**dịch:", "---", "###", 
+                    "scene ", "phân cảnh", "prompt ", "**prompt"
                 ]):
                     break
                 
-                # This should be the English prompt
-                # Clean up markdown formatting
-                cleaned = next_line.strip()
-                cleaned = re.sub(r'^\*\*.*?\*\*:?\s*', '', cleaned)  # Remove **Label:**
-                cleaned = cleaned.strip('*').strip('-').strip()
+                prompt_lines.append(next_line)
+                j += 1
+            
+            if prompt_lines:
+                prompt_text = ' '.join(prompt_lines).strip()
+                prompt_text = re.sub(r'^\*\*.*?\*\*:?\s*', '', prompt_text)
+                prompt_text = prompt_text.strip('*').strip('-').strip()
                 
-                # Check length first
-                if len(cleaned) < 40:
-                    print(f"[REJECT] Too short ({len(cleaned)} chars): {cleaned[:50]}")
-                    i += 1
-                    continue
-                
-                # Verify it's English (contains typical English prompt keywords)
-                if any(keyword in cleaned.lower() for keyword in [
-                    "photo", "realistic", "image", "woman", "man", "person", 
-                    "wearing", "background", "lighting", "cinematic", "scene",
-                    "year-old", "caucasian", "asian", "standing", "sitting", "ultra",
-                    "bedroom", "living room", "kitchen", "office", "street", "park"
-                ]):
-                    print(f"[EXTRACTED LABELED PROMPT]: {cleaned[:80]}...")
-                    prompts.append(cleaned)
-                    break
-                else:
-                    print(f"[REJECT] No English keywords in: {cleaned[:80]}...")
-                
-                i += 1
-        
-        i += 1
+                if len(prompt_text) >= 100 and _is_valid_prompt(prompt_text):
+                    prompts.append(prompt_text)
+                    print(f"[EXTRACTED LABELED PROMPT #{label_count}]: {prompt_text[:80]}...")
     
-    # If we found labeled prompts, return them
+    if prompts and found_labeled_prompts:
+        print(f"[PARSER] ✅ Strategy 1: Extracted {len(prompts)} labeled prompts")
+        return _validate_and_clean_prompts(prompts)
+    
+    # ========== STRATEGY 2: Pattern-based extraction (most reliable) ==========
+    print("[PARSER] Strategy 2: Pattern-based extraction...")
+    
+    # Pattern 1: Prompts starting with "Realistic photo" or similar
+    pattern1 = r'(Realistic photo[^R]*(?:\([^)]+\)[^R]*){1,3}[^R]*(?:background|lighting|scene)[^R]*)'
+    matches1 = re.finditer(pattern1, content, re.IGNORECASE | re.DOTALL)
+    
+    for match in matches1:
+        prompt_text = match.group(1).strip()
+        # Clean up: remove extra whitespace, normalize
+        prompt_text = ' '.join(prompt_text.split())
+        if len(prompt_text) >= 150 and _is_valid_prompt(prompt_text):
+            prompts.append(prompt_text)
+            print(f"[EXTRACTED PATTERN PROMPT]: {prompt_text[:80]}...")
+    
     if prompts:
-        print(f"[PARSER] ✅ Extracted {len(prompts)} labeled prompts successfully")
-        return prompts
+        print(f"[PARSER] ✅ Strategy 2: Extracted {len(prompts)} prompts via pattern matching")
+        return _validate_and_clean_prompts(prompts)
     
-    if found_labeled_prompts and not prompts:
-        print(f"[PARSER] ⚠️ Found {label_count} prompt labels but extracted 0 prompts!")
-        print(f"[PARSER] This means all prompts were rejected by validation")
-    
-    # Otherwise, try parsing as clean format (NEW FORMAT - prompts only, no labels)
-    print("[PARSER] No labeled prompts found, trying clean format...")
-    paragraphs = content.split('\n\n')  # Split by double newline
+    # ========== STRATEGY 3: Split by double newline ==========
+    print("[PARSER] Strategy 3: Split by double newline...")
+    paragraphs = content.split('\n\n')
     print(f"[PARSER] Split into {len(paragraphs)} paragraphs")
     
     for para in paragraphs:
         cleaned = para.strip()
-        
-        # Skip empty paragraphs
-        if not cleaned:
+        if not cleaned or len(cleaned) < 100:
             continue
         
-        # Skip intro text
+        # Skip intro/explanatory text
         if any(x in cleaned.lower() for x in [
             "here are", "below are", "dưới đây là", "following are",
-            "i'll split", "i will split", "let me", "first,"
+            "i'll split", "i will split", "let me", "first,", "example:",
+            "note:", "remember:", "important:"
         ]):
-            print(f"[SKIP INTRO PARA]: {cleaned[:50]}...")
             continue
         
-        # Skip short paragraphs
-        if len(cleaned) < 50:
-            print(f"[SKIP SHORT PARA]: {cleaned[:50]}")
-            continue
-        
-        # Skip Vietnamese text
+        # Skip Vietnamese
         if any(marker in cleaned.lower() for marker in [
-            "tóm tắt:", "bản dịch:", "dịch:", "phân cảnh"
+            "tóm tắt:", "bản dịch:", "dịch:", "phân cảnh", "cảnh"
         ]):
-            print(f"[SKIP VIETNAMESE]: {cleaned[:50]}...")
             continue
         
-        # Accept if it looks like an English image prompt
-        if any(keyword in cleaned.lower() for keyword in [
-            "photo", "realistic", "woman", "man", "wearing", 
-            "background", "lighting", "standing", "sitting", "ultra"
-        ]):
-            print(f"[EXTRACTED CLEAN PROMPT]: {cleaned[:80]}...")
+        # Normalize: join lines if paragraph has newlines
+        cleaned = ' '.join(cleaned.split('\n'))
+        cleaned = ' '.join(cleaned.split())
+        
+        if _is_valid_prompt(cleaned):
             prompts.append(cleaned)
+            print(f"[EXTRACTED PARA PROMPT]: {cleaned[:80]}...")
     
     if prompts:
-        print(f"[PARSER] ✅ Extracted {len(prompts)} clean prompts successfully")
-    else:
-        print(f"[PARSER] ❌ Failed to extract any prompts from response")
+        print(f"[PARSER] ✅ Strategy 3: Extracted {len(prompts)} prompts from paragraphs")
+        return _validate_and_clean_prompts(prompts)
     
-    return prompts
+    # ========== STRATEGY 4: Line-by-line with prompt start detection ==========
+    print("[PARSER] Strategy 4: Line-by-line with start detection...")
+    current_prompt = []
+    
+    for line in lines:
+        line_stripped = line.strip()
+        if not line_stripped:
+            # Empty line - finalize current prompt if exists
+            if current_prompt:
+                prompt_text = ' '.join(current_prompt).strip()
+                if len(prompt_text) >= 150 and _is_valid_prompt(prompt_text):
+                    prompts.append(prompt_text)
+                    print(f"[EXTRACTED LINE PROMPT]: {prompt_text[:80]}...")
+                current_prompt = []
+            continue
+        
+        # Check if line starts a new prompt
+        if line_stripped.lower().startswith((
+            "realistic photo", "ultra-realistic", "cinematic", "photorealistic",
+            "raw photo", "high-detail photo"
+        )):
+            # Save previous prompt
+            if current_prompt:
+                prompt_text = ' '.join(current_prompt).strip()
+                if len(prompt_text) >= 150 and _is_valid_prompt(prompt_text):
+                    prompts.append(prompt_text)
+                    print(f"[EXTRACTED LINE PROMPT]: {prompt_text[:80]}...")
+            current_prompt = [line_stripped]
+        elif current_prompt:
+            # Continue building current prompt
+            current_prompt.append(line_stripped)
+    
+    # Don't forget last prompt
+    if current_prompt:
+        prompt_text = ' '.join(current_prompt).strip()
+        if len(prompt_text) >= 150 and _is_valid_prompt(prompt_text):
+            prompts.append(prompt_text)
+            print(f"[EXTRACTED LINE PROMPT]: {prompt_text[:80]}...")
+    
+    if prompts:
+        print(f"[PARSER] ✅ Strategy 4: Extracted {len(prompts)} prompts line-by-line")
+        return _validate_and_clean_prompts(prompts)
+    
+    # ========== STRATEGY 5: Regex-based extraction (fallback) ==========
+    print("[PARSER] Strategy 5: Advanced regex extraction (fallback)...")
+    
+    # Look for prompts with structure: style + camera + (appearance) + action + (appearance) + action + background
+    # This pattern matches the exact structure we require
+    advanced_pattern = r'((?:Realistic photo|Ultra-realistic|Cinematic|Photorealistic)[^R]*(?:\([^)]+\)[^R]*){1,4}[^R]*(?:background|lighting|scene|characters)[^R]*)'
+    matches = re.finditer(advanced_pattern, content, re.IGNORECASE | re.DOTALL)
+    
+    for match in matches:
+        prompt_text = match.group(1).strip()
+        prompt_text = ' '.join(prompt_text.split())
+        if len(prompt_text) >= 150 and _is_valid_prompt(prompt_text):
+            # Check if not already extracted
+            if not any(abs(len(p) - len(prompt_text)) < 10 and p[:50] == prompt_text[:50] for p in prompts):
+                prompts.append(prompt_text)
+                print(f"[EXTRACTED REGEX PROMPT]: {prompt_text[:80]}...")
+    
+    if prompts:
+        print(f"[PARSER] ✅ Strategy 5: Extracted {len(prompts)} prompts via regex")
+        return _validate_and_clean_prompts(prompts)
+    
+    # ========== FINAL FALLBACK: Extract any long English text blocks ==========
+    print("[PARSER] Strategy 6: Final fallback - extract long English blocks...")
+    
+    # Split by any whitespace sequence and look for long English blocks
+    blocks = re.split(r'\n{2,}|\r\n{2,}', content)
+    for block in blocks:
+        block = block.strip()
+        if len(block) < 150:
+            continue
+        
+        # Must contain English prompt keywords
+        if any(kw in block.lower() for kw in [
+            "photo", "realistic", "woman", "man", "wearing", "background", 
+            "lighting", "year-old", "american"
+        ]):
+            # Must NOT be Vietnamese
+            if not any(vn in block.lower() for vn in [
+                "tóm tắt", "bản dịch", "phân cảnh", "cảnh"
+            ]):
+                block = ' '.join(block.split())
+                if _is_valid_prompt(block):
+                    prompts.append(block)
+                    print(f"[EXTRACTED FALLBACK PROMPT]: {block[:80]}...")
+    
+    if prompts:
+        print(f"[PARSER] ✅ Strategy 6: Extracted {len(prompts)} prompts via fallback")
+        return _validate_and_clean_prompts(prompts)
+    
+    # ========== NO PROMPTS FOUND ==========
+    print(f"[PARSER] ❌ All strategies failed. Content preview:\n{content[:500]}...")
+    return []
+
+
+def _is_valid_prompt(text: str) -> bool:
+    """Validate if text is a valid English image prompt"""
+    text_lower = text.lower()
+    
+    # Must be long enough
+    if len(text) < 100:
+        return False
+    
+    # Must contain English prompt keywords
+    required_keywords = [
+        "photo", "realistic", "ultra", "cinematic", "photorealistic"
+    ]
+    if not any(kw in text_lower for kw in required_keywords):
+        return False
+    
+    # Must contain character/appearance keywords
+    character_keywords = [
+        "woman", "man", "person", "character", "wearing", "year-old",
+        "background", "lighting", "scene", "standing", "sitting"
+    ]
+    if not any(kw in text_lower for kw in character_keywords):
+        return False
+    
+    # Must NOT be Vietnamese
+    vietnamese_markers = [
+        "tóm tắt", "bản dịch", "dịch:", "phân cảnh", "cảnh", "nhân vật",
+        "mô tả", "ví dụ", "lưu ý"
+    ]
+    if any(vn in text_lower for vn in vietnamese_markers):
+        return False
+    
+    # Must NOT be explanatory text
+    explanatory_markers = [
+        "here are", "below are", "following are", "i will", "let me",
+        "remember", "note:", "important:", "example:", "for instance"
+    ]
+    if any(marker in text_lower[:100] for marker in explanatory_markers):
+        return False
+    
+    # Should have parentheses (appearance descriptions)
+    if '(' not in text or ')' not in text:
+        # Allow prompts without parentheses if they're clearly image prompts
+        if not any(kw in text_lower for kw in ["wearing", "year-old", "skin", "hair"]):
+            return False
+    
+    return True
+
+
+def _validate_and_clean_prompts(prompts: List[str]) -> List[str]:
+    """Clean and validate extracted prompts, remove duplicates"""
+    import re
+    
+    cleaned_prompts = []
+    seen_prompts = set()
+    
+    for prompt in prompts:
+        # Normalize whitespace
+        cleaned = ' '.join(prompt.split())
+        cleaned = cleaned.strip()
+        
+        # Remove leading/trailing punctuation that shouldn't be there
+        cleaned = re.sub(r'^[^\w\(]+', '', cleaned)
+        cleaned = re.sub(r'[^\w\)]+$', '', cleaned)
+        
+        # Must still be valid after cleaning
+        if not _is_valid_prompt(cleaned):
+            continue
+        
+        # Check for duplicates (using first 100 chars as fingerprint)
+        fingerprint = cleaned[:100].lower()
+        if fingerprint in seen_prompts:
+            print(f"[PARSER] Skipping duplicate: {cleaned[:80]}...")
+            continue
+        
+        seen_prompts.add(fingerprint)
+        cleaned_prompts.append(cleaned)
+    
+    print(f"[PARSER] ✅ Final validation: {len(cleaned_prompts)} unique valid prompts")
+    return cleaned_prompts
 
 # ==================== GROQ AI SCRIPT ANALYSIS ====================
 def analyze_script_with_groq(script: str, num_parts: int, groq_api_key: str, custom_system_prompt: str = "") -> List[str]:
@@ -798,7 +975,7 @@ def analyze_script_with_groq(script: str, num_parts: int, groq_api_key: str, cus
 
     # Use script summary if available and script is very long, otherwise use full script
     script_to_analyze = script
-    max_script_length = 30000  # Groq can handle longer scripts
+    max_script_length = 200000  # Groq llama-3.3-70b có context window 128K tokens, có thể xử lý script dài hơn
     
     if script_summary and len(script) > 20000:
         # Use summary + partial script for very long scripts
@@ -831,7 +1008,7 @@ def analyze_script_with_groq(script: str, num_parts: int, groq_api_key: str, cus
             {"role": "user", "content": user_prompt}
         ],
         "temperature": 0.7,
-        "max_tokens": 60000  # Groq's limit (x10 from 6000 for higher output capacity)
+        "max_tokens": 32768  # Groq's actual limit for llama-3.3-70b (thay vì 60000)
     }
     
     try:
@@ -883,13 +1060,18 @@ def analyze_script_with_groq(script: str, num_parts: int, groq_api_key: str, cus
             print(f"[LIMIT] AI returned {len(final_prompts)} prompts, limiting to {num_parts}")
             final_prompts = final_prompts[:num_parts]
         
+        # Log all prompts after limiting
+        print(f"[GOT PROMPTS] Total: {len(final_prompts)}")
+        for i, prompt in enumerate(final_prompts, 1):
+            print(f"[GOT PROMPT {i}/{len(final_prompts)}]: {prompt}")
+        
         return final_prompts
     
     except Exception as e:
         raise Exception(f"Groq API Error: {str(e)}")
 
 # ==================== OPENAI/CHATGPT SCRIPT ANALYSIS ====================
-def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str, model: str, custom_system_prompt: str = "") -> List[str]:
+def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str, model: str, custom_system_prompt: str = "", verbosity: str = "medium") -> List[str]:
 
     if not requests:
         raise Exception("requests library not installed")
@@ -1050,6 +1232,19 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
     else:
         print(f"[OPENAI] Model '{model_to_use}' does not support custom temperature (using default).")
     
+    # GPT-5 specific parameters: verbosity and reasoning_effort
+    if is_gpt5_model:
+        # Use parameters passed to function (from UI settings)
+        # verbosity is supported by GPT-5
+        payload["verbosity"] = verbosity
+        print(f"[OPENAI] Using verbosity: {verbosity}")
+        
+        # Note: reasoning_effort parameter may not be supported by current GPT-5 API
+        # If API returns error about unknown parameter, we'll handle it in error handling below
+        # For now, we'll try to add it but handle gracefully if it fails
+        # payload["reasoning_effort"] = reasoning_effort  # Commented out - not supported yet
+        print(f"[OPENAI] Note: reasoning_effort parameter not yet supported by GPT-5 API (using default)")
+    
     # Add max_tokens or max_completion_tokens based on model
     if is_o1_model:
         # o1 models use max_completion_tokens for output length
@@ -1121,8 +1316,33 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
                     if error_code:
                         print(f"[OPENAI ERROR] Code: {error_code}")
                     
-                    # Handle unsupported_value for temperature (MUST BE FIRST)
-                    if error_code == "unsupported_value" and error_param == "temperature":
+                    # Handle unknown parameter errors (e.g., reasoning parameter not supported)
+                    if error_code == "unknown_parameter":
+                        print(f"[OPENAI ERROR] Parameter '{error_param}' is not supported by this model.")
+                        # Remove unsupported parameter and retry
+                        if error_param == "reasoning":
+                            payload.pop("reasoning", None)
+                            print(f"[OPENAI] Retrying without 'reasoning' parameter...")
+                        elif error_param == "reasoning_effort":
+                            payload.pop("reasoning_effort", None)
+                            print(f"[OPENAI] Retrying without 'reasoning_effort' parameter...")
+                        else:
+                            payload.pop(error_param, None)
+                            print(f"[OPENAI] Retrying without '{error_param}' parameter...")
+                        
+                        try:
+                            response = requests.post(
+                                "https://api.openai.com/v1/chat/completions",
+                                headers=headers,
+                                json=payload,
+                                timeout=request_timeout
+                            )
+                            response.raise_for_status()
+                        except Exception as retry_error:
+                            raise Exception(f"OpenAI API Error (after removing {error_param}): {str(retry_error)}")
+                    
+                    # Handle unsupported_value for temperature (MUST BE AFTER unknown_parameter)
+                    elif error_code == "unsupported_value" and error_param == "temperature":
                         print(f"[OPENAI ERROR] Model '{model_to_use}' does not support custom temperature.")
                         # Retry without temperature parameter
                         payload.pop("temperature", None)
@@ -1334,6 +1554,11 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
             print(f"[LIMIT] AI returned {len(final_prompts)} prompts, limiting to {num_parts}")
             final_prompts = final_prompts[:num_parts]
         
+        # Log all prompts after limiting
+        print(f"[GOT PROMPTS] Total: {len(final_prompts)}")
+        for i, prompt in enumerate(final_prompts, 1):
+            print(f"[GOT PROMPT {i}/{len(final_prompts)}]: {prompt}")
+        
         return final_prompts
     
     except (requests.exceptions.Timeout, requests.exceptions.ReadTimeout) as timeout_error:
@@ -1376,6 +1601,11 @@ def analyze_script_with_openai(script: str, num_parts: int, openai_api_key: str,
                 if len(final_prompts) > num_parts:
                     print(f"[LIMIT] AI returned {len(final_prompts)} prompts, limiting to {num_parts}")
                     final_prompts = final_prompts[:num_parts]
+                
+                # Log all prompts after limiting
+                print(f"[GOT PROMPTS] Total: {len(final_prompts)}")
+                for i, prompt in enumerate(final_prompts, 1):
+                    print(f"[GOT PROMPT {i}/{len(final_prompts)}]: {prompt}")
                 
                 return final_prompts
             except Exception as fallback_error:
@@ -1451,7 +1681,9 @@ def analyze_script_with_gemini(script: str, num_parts: int, gemini_api_key: str,
     
     # Use script summary if available and script is very long, otherwise use full script
     script_to_analyze = script
-    max_script_length = 40000  # Gemini has large context window
+    # Gemini 2.0 has very large context window (up to 1M tokens), so we can use much longer scripts
+    # For safety, set to 200000 chars (approximately 50K tokens) - enough for most scripts
+    max_script_length = 200000  # Gemini 2.0 can handle very long scripts
     
     if script_summary and len(script) > 20000:
         # Use summary + partial script for very long scripts
@@ -1462,12 +1694,12 @@ def analyze_script_with_gemini(script: str, num_parts: int, gemini_api_key: str,
             print(f"[GEMINI] Using summary + full script ({len(script)} chars)")
             script_to_analyze = f"SCRIPT SUMMARY:\n{script_summary}\n\nFULL SCRIPT:\n{script}"
     else:
-        # No summary or script not too long - use full script if possible
+        # No summary or script not too long - use full script (Gemini can handle it)
         if len(script_to_analyze) > max_script_length:
-            print(f"[SCRIPT] Script is VERY long ({len(script)} chars), truncating to {max_script_length} chars")
-            script_to_analyze = script_to_analyze[:max_script_length] + f"\n\n[Script continues... Total length: {len(script)} chars]"
+            print(f"[GEMINI] Script is VERY long ({len(script)} chars), using first {max_script_length} chars (Gemini can handle up to 200K chars)")
+            script_to_analyze = script_to_analyze[:max_script_length] + f"\n\n[Script continues... Total length: {len(script)} chars. Use context from beginning for full story understanding.]"
         else:
-            print(f"[SCRIPT] Using full script ({len(script)} chars)")
+            print(f"[GEMINI] Using full script ({len(script)} chars) - no truncation needed")
     
     user_prompt = f"Analyze this script and split it into EXACTLY {num_parts} parts. Create one English image generation prompt for each part following the rules above. Use the CHARACTER DETAILS section to ensure absolute consistency across all prompts. OUTPUT IN ENGLISH ONLY:\n\n{script_to_analyze}"
     
@@ -1486,7 +1718,26 @@ def analyze_script_with_gemini(script: str, num_parts: int, gemini_api_key: str,
             )
         )
         
-        content = response.text.strip()
+        # Check if response.text exists before calling strip()
+        if response.text is None:
+            print(f"[GEMINI] ⚠️ Response.text is None, trying to get text from candidates...")
+            # Try to get text from candidates
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'content') and candidate.content:
+                    if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                        content = candidate.content.parts[0].text if hasattr(candidate.content.parts[0], 'text') else ""
+                    else:
+                        content = ""
+                else:
+                    content = ""
+            else:
+                content = ""
+            if not content:
+                print(f"[GEMINI] ❌ Could not extract text from response")
+                return []
+        else:
+            content = response.text.strip()
         
         print(f"[GEMINI AI RAW RESPONSE]:\n{content}\n{'='*80}")
         print(f"[GEMINI DEBUG] Requested {num_parts} prompts, response length: {len(content)} chars")
@@ -1521,6 +1772,11 @@ def analyze_script_with_gemini(script: str, num_parts: int, gemini_api_key: str,
             print(f"[LIMIT] AI returned {len(final_prompts)} prompts, limiting to {num_parts}")
             final_prompts = final_prompts[:num_parts]
         
+        # Log all prompts after limiting
+        print(f"[GOT PROMPTS] Total: {len(final_prompts)}")
+        for i, prompt in enumerate(final_prompts, 1):
+            print(f"[GOT PROMPT {i}/{len(final_prompts)}]: {prompt}")
+        
         return final_prompts
     
     except Exception as e:
@@ -1544,7 +1800,8 @@ class SettingsManager:
         "preset": "balanced",
         "script_parts": 5,
         "prompt_provider": "Groq",
-        "provider_model": "llama-3.3-70b-versatile"
+        "provider_model": "llama-3.3-70b-versatile",
+        "gpt5_verbosity": "medium"
     }
     
     def __init__(self, path: Path):
@@ -3225,7 +3482,21 @@ class ImageGeneratorTab(QWidget):
         self.toolbar_model_cb = QComboBox()
         self.toolbar_model_cb.setMinimumWidth(360)
         self.toolbar_model_cb.setToolTip("Select AI model for generating prompts from script")
+        self.toolbar_model_cb.currentTextChanged.connect(self._on_toolbar_model_changed)
         basic_layout.addWidget(self.toolbar_model_cb)
+        
+        # GPT-5 specific parameters (only visible for ChatGPT + GPT-5 models)
+        self.verbosity_label = self._create_label("Verbosity (GPT-5 only)")
+        self.verbosity_cb = QComboBox()
+        self.verbosity_cb.addItems(["low", "medium", "high"])
+        self.verbosity_cb.setCurrentText("medium")
+        self.verbosity_cb.setMinimumWidth(360)
+        self.verbosity_cb.setToolTip("low → terse UX, minimal prose\nmedium (default) → balanced detail\nhigh → verbose, great for audits, teaching, or hand-offs")
+        basic_layout.addWidget(self.verbosity_label)
+        basic_layout.addWidget(self.verbosity_cb)
+        
+        # Initially hide GPT-5 parameters
+        self._update_gpt5_params_visibility()
         
         # Initialize model options
         self._on_toolbar_provider_changed(self.toolbar_provider_cb.currentText())
@@ -3365,6 +3636,12 @@ class ImageGeneratorTab(QWidget):
         send_to_video_btn.setMaximumWidth(110)
         send_to_video_btn.clicked.connect(self.on_send_to_image2video)
         toolbar_layout.addWidget(send_to_video_btn)
+        
+        export_btn = ModernButton("💾 Export Prompts", Theme.SECONDARY)
+        export_btn.setMaximumWidth(140)
+        export_btn.setToolTip("Export all prompts to a text file")
+        export_btn.clicked.connect(self.on_export_prompts)
+        toolbar_layout.addWidget(export_btn)
         
         self.cancel_btn = ModernButton("⏹ Cancel", Theme.DANGER)
         self.cancel_btn.setMaximumWidth(100)
@@ -3516,6 +3793,16 @@ class ImageGeneratorTab(QWidget):
             self._on_toolbar_provider_changed(provider)
         if hasattr(self, 'toolbar_model_cb'):
             self.toolbar_model_cb.setCurrentText(model)
+        
+        # Load GPT-5 parameters
+        verbosity = s.get("gpt5_verbosity", "medium")
+        if hasattr(self, 'verbosity_cb'):
+            if verbosity in ["low", "medium", "high"]:
+                self.verbosity_cb.setCurrentText(verbosity)
+        
+        # Update visibility
+        if hasattr(self, '_update_gpt5_params_visibility'):
+            self._update_gpt5_params_visibility()
     
     def save_settings(self):
         self.settings.set("output_dir", self.output_edit.text().strip())
@@ -3536,6 +3823,8 @@ class ImageGeneratorTab(QWidget):
             self.settings.set("prompt_provider", self.toolbar_provider_cb.currentText())
         if hasattr(self, 'toolbar_model_cb'):
             self.settings.set("provider_model", self.toolbar_model_cb.currentText())
+        if hasattr(self, 'verbosity_cb'):
+            self.settings.set("gpt5_verbosity", self.verbosity_cb.currentText())
         
         try:
             w = self.width()
@@ -3580,6 +3869,27 @@ class ImageGeneratorTab(QWidget):
         
         self.toolbar_model_cb.clear()
         self.toolbar_model_cb.addItems(items)
+        
+        # Update GPT-5 params visibility
+        self._update_gpt5_params_visibility()
+    
+    def _on_toolbar_model_changed(self, model: str):
+        """Update GPT-5 params visibility when model changes"""
+        self._update_gpt5_params_visibility()
+    
+    def _update_gpt5_params_visibility(self):
+        """Show/hide GPT-5 parameters based on provider and model"""
+        provider = self.toolbar_provider_cb.currentText() if hasattr(self, 'toolbar_provider_cb') else ""
+        model = self.toolbar_model_cb.currentText() if hasattr(self, 'toolbar_model_cb') else ""
+        
+        # Only show for ChatGPT + GPT-5 models
+        # Ensure is_gpt5 is always a boolean
+        is_gpt5 = bool(provider == "ChatGPT" and model and ("gpt-5" in model.lower()))
+        
+        if hasattr(self, 'verbosity_label'):
+            self.verbosity_label.setVisible(is_gpt5)
+        if hasattr(self, 'verbosity_cb'):
+            self.verbosity_cb.setVisible(is_gpt5)
     
     def _fetch_openai_models_for_toolbar(self):
         """Fetch available OpenAI models from API for toolbar"""
@@ -3945,7 +4255,13 @@ class ImageGeneratorTab(QWidget):
                 if worker_provider == "ChatGPT":
                     # Update status: đang tạo prompts với ChatGPT
                     QTimer.singleShot(0, lambda: self.set_status(f"🤖 Analyzing script with {worker_provider} ({worker_model})... Generating prompts 1/{num_parts}..."))
-                    prompts = analyze_script_with_openai(script, num_parts, worker_api_key, worker_model, custom_prompt)
+                    
+                    # Get GPT-5 parameters from UI if available
+                    verbosity = "medium"
+                    if hasattr(self, 'verbosity_cb') and self.verbosity_cb.isVisible():
+                        verbosity = self.verbosity_cb.currentText()
+                    
+                    prompts = analyze_script_with_openai(script, num_parts, worker_api_key, worker_model, custom_prompt, verbosity)
                     print(f"[WORKER] Got {len(prompts)} prompts from ChatGPT ({worker_model})")
                 elif worker_provider == "Gemini":
                     # Update status: đang tạo prompts với Gemini
@@ -4306,6 +4622,93 @@ class ImageGeneratorTab(QWidget):
         if self.worker:
             self.worker.cancel()
         self.set_status("⚠️ Canceling...")
+    
+    def on_export_prompts(self):
+        """Export all prompts to a text file"""
+        if not self.rows:
+            QMessageBox.information(
+                self,
+                "No Prompts",
+                "No prompts to export.\n\nPlease add some prompts first."
+            )
+            return
+        
+        # Get file path from user
+        from PySide6.QtWidgets import QFileDialog
+        from pathlib import Path
+        
+        # Default filename with timestamp
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_filename = f"prompts_export_{timestamp}.txt"
+        
+        # Get output directory if available
+        default_dir = str(self.output_dir) if hasattr(self, 'output_dir') and self.output_dir else ""
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Prompts",
+            str(Path(default_dir) / default_filename) if default_dir else default_filename,
+            "Text files (*.txt);;All files (*.*)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            # Collect all prompts from rows
+            prompts = []
+            for i, row in enumerate(self.rows, 1):
+                try:
+                    prompt = row.get_prompt()
+                    if prompt and prompt.strip():
+                        prompts.append(prompt.strip())
+                except Exception as e:
+                    print(f"[EXPORT] Error getting prompt from row {i}: {e}")
+                    continue
+            
+            if not prompts:
+                QMessageBox.warning(
+                    self,
+                    "No Valid Prompts",
+                    "No valid prompts found to export."
+                )
+                return
+            
+            # Write to file
+            with open(file_path, 'w', encoding='utf-8') as f:
+                # Write header
+                f.write(f"# Exported Prompts\n")
+                f.write(f"# Total: {len(prompts)} prompts\n")
+                f.write(f"# Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"#\n\n")
+                
+                # Write prompts (one per line, numbered)
+                for i, prompt in enumerate(prompts, 1):
+                    f.write(f"{prompt}\n")
+                    # Add blank line between prompts for readability
+                    if i < len(prompts):
+                        f.write("\n")
+            
+            # Show success message
+            QMessageBox.information(
+                self,
+                "Export Successful",
+                f"✅ Successfully exported {len(prompts)} prompts to:\n\n{file_path}"
+            )
+            
+            self.set_status(f"✅ Exported {len(prompts)} prompts to {Path(file_path).name}")
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[EXPORT] Error: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(
+                self,
+                "Export Error",
+                f"Failed to export prompts:\n\n{error_msg}"
+            )
     
     def on_delete_all_rows(self):
         if not self.rows:

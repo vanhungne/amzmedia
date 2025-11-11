@@ -4797,6 +4797,10 @@ class MainWindow(QMainWindow):
         else:
             self.orchestrator = None
         
+        # Track imported scripts with status
+        # Format: {script_path: {'status': 'queue'|'running'|'completed', 'project_id': str, 'project_name': str, 'script_name': str, 'timestamp': datetime}}
+        self.imported_scripts = {}
+        
         self.tabs = QTabWidget(); self.tabs.setTabPosition(QTabWidget.North)
         self.tab_project = QWidget()  # NEW: Project Management tab
         self.tab_image2video = QWidget()
@@ -6098,8 +6102,116 @@ class MainWindow(QMainWindow):
         # Double click to select project
         self.table_projects.cellDoubleClicked.connect(self.on_select_project)
         
+        # ========== SCRIPT QUEUE MANAGEMENT ==========
+        # Scripts table header
+        scripts_header = QHBoxLayout()
+        scripts_title = QLabel("📜 Imported Scripts Queue")
+        scripts_title.setStyleSheet("""
+            font-size: 14pt;
+            font-weight: bold;
+            color: #11224E;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        """)
+        scripts_header.addWidget(scripts_title)
+        scripts_header.addStretch()
+        
+        # Start Queue button (only enable when no scripts are running)
+        self.btn_start_queue = QPushButton("▶️ Start Queue")
+        self.btn_start_queue.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #10b981, stop:1 #059669);
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+                font-size: 10pt;
+                min-height: 35px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #34d399, stop:1 #10b981);
+            }
+            QPushButton:disabled {
+                background: #9ca3af;
+                color: #6b7280;
+            }
+        """)
+        self.btn_start_queue.clicked.connect(self.on_start_queue)
+        scripts_header.addWidget(self.btn_start_queue)
+        
+        # End All Workers button
+        self.btn_end_all = QPushButton("⏹️ End All Workers")
+        self.btn_end_all.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #ef4444, stop:1 #dc2626);
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+                font-size: 10pt;
+                min-height: 35px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #f87171, stop:1 #ef4444);
+            }
+        """)
+        self.btn_end_all.clicked.connect(self.on_end_all_workers)
+        scripts_header.addWidget(self.btn_end_all)
+        
+        layout.addLayout(scripts_header)
+        
+        # Scripts table
+        self.table_scripts = QTableWidget()
+        self.table_scripts.setColumnCount(4)
+        self.table_scripts.setHorizontalHeaderLabels([
+            "Script Name", "Project", "Status", "Actions"
+        ])
+        self.table_scripts.horizontalHeader().setStretchLastSection(True)
+        self.table_scripts.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table_scripts.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table_scripts.setAlternatingRowColors(True)
+        self.table_scripts.verticalHeader().setVisible(False)
+        
+        # Set column widths
+        self.table_scripts.setColumnWidth(0, 300)  # Script Name
+        self.table_scripts.setColumnWidth(1, 200)  # Project
+        self.table_scripts.setColumnWidth(2, 120)  # Status
+        # Column 3 (Actions) will stretch
+        
+        self.table_scripts.setStyleSheet("""
+            QTableWidget {
+                background-color: white;
+                border: 2px solid #d1d9e6;
+                border-radius: 8px;
+                gridline-color: #e8eef5;
+            }
+            QTableWidget::item:selected {
+                background-color: #FFE8D6;
+                color: #11224E;
+            }
+            QHeaderView::section {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #f1f5f9, stop:1 #e2e8f0);
+                color: #11224E;
+                padding: 10px;
+                border: none;
+                border-right: 1px solid #cbd5e1;
+                border-bottom: 2px solid #94a3b8;
+                font-weight: bold;
+                font-size: 10pt;
+            }
+        """)
+        layout.addWidget(self.table_scripts)
+        
         # Load initial data
         self.refresh_project_list()
+        self.refresh_scripts_table()
 
     def refresh_project_list(self):
         """Refresh project list in table - Simple view with project name only"""
@@ -6517,8 +6629,12 @@ class MainWindow(QMainWindow):
         if not script_path:
             return
         
-        # Random num_prompts from 12 to 24 (on import)
+        # Import required modules at the start
+        import os
         import random
+        from datetime import datetime
+        
+        # Random num_prompts from 12 to 24 (on import)
         num_prompts = random.randint(12, 24)
         print(f"[IMPORT SCRIPT] Random num_prompts: {num_prompts} (range: 12-24)")
         
@@ -6527,26 +6643,33 @@ class MainWindow(QMainWindow):
         
         # Get provider and model from project
         # Confirm
+        script_name = os.path.basename(script_path)
         reply = QMessageBox.question(
             self,
             "🚀 Start Auto Workflow?",
             f"📁 Project: {project.name}\n"
-            f"📜 Script: {os.path.basename(script_path)}\n"
+            f"📜 Script: {script_name}\n"
             f"🎨 Images: {num_prompts} prompts (random 12-24)",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes
         )
         
         if reply == QMessageBox.Yes:
-            try:
-                # Start auto workflow
-                self.orchestrator.start_workflow(project, script_path)
-            except Exception as e:
-                QMessageBox.critical(
-                    self,
-                    "Workflow Error",
-                    f"Failed to start auto workflow:\n\n{e}"
-                )
+            # Add script to queue instead of starting immediately
+            self.imported_scripts[script_path] = {
+                'status': 'queue',
+                'project_id': project.id,
+                'project_name': project.name,
+                'script_name': script_name,
+                'timestamp': datetime.now()
+            }
+            self.refresh_scripts_table()
+            QMessageBox.information(
+                self,
+                "Script Added to Queue",
+                f"📜 Script '{script_name}' has been added to queue.\n\n"
+                f"Click '▶️ Start Queue' to begin processing."
+            )
     
     def on_select_project(self, row, col):
         """Select project on double click"""
@@ -6579,6 +6702,242 @@ class MainWindow(QMainWindow):
             f"Project '{project.name}' is now active!\n\n"
             f"✅ Voice settings applied\n"
             "All apps will now use this project's output folders."
+        )
+    
+    def refresh_scripts_table(self):
+        """Refresh scripts table with current queue status"""
+        from datetime import datetime
+        self.table_scripts.setRowCount(0)
+        
+        # Sort by timestamp (oldest first for queue)
+        sorted_scripts = sorted(
+            self.imported_scripts.items(),
+            key=lambda x: x[1].get('timestamp', datetime.min)
+        )
+        
+        for script_path, script_data in sorted_scripts:
+            row = self.table_scripts.rowCount()
+            self.table_scripts.insertRow(row)
+            
+            # Script Name
+            name_item = QTableWidgetItem(script_data['script_name'])
+            name_item.setFont(QApplication.font())
+            font = name_item.font()
+            font.setPointSize(10)
+            name_item.setFont(font)
+            self.table_scripts.setItem(row, 0, name_item)
+            
+            # Project
+            project_item = QTableWidgetItem(script_data['project_name'])
+            project_item.setFont(QApplication.font())
+            self.table_scripts.setItem(row, 1, project_item)
+            
+            # Status
+            status = script_data['status']
+            status_item = QTableWidgetItem(status.upper())
+            status_item.setFont(QApplication.font())
+            
+            # Color code status
+            if status == 'queue':
+                status_item.setForeground(QColor("#f59e0b"))  # Orange
+            elif status == 'running':
+                status_item.setForeground(QColor("#3b82f6"))  # Blue
+            elif status == 'completed':
+                status_item.setForeground(QColor("#10b981"))  # Green
+            
+            self.table_scripts.setItem(row, 2, status_item)
+            
+            # Actions column (empty for now, can add buttons later)
+            actions_item = QTableWidgetItem("")
+            self.table_scripts.setItem(row, 3, actions_item)
+        
+        # Update Start Queue button state
+        self._update_start_queue_button()
+    
+    def _update_start_queue_button(self):
+        """Update Start Queue button enabled state"""
+        has_running = any(
+            script_data['status'] == 'running'
+            for script_data in self.imported_scripts.values()
+        )
+        has_queue = any(
+            script_data['status'] == 'queue'
+            for script_data in self.imported_scripts.values()
+        )
+        
+        # Enable only if there are queued scripts and no running scripts
+        self.btn_start_queue.setEnabled(has_queue and not has_running)
+    
+    def on_start_queue(self):
+        """Start processing the first queued script"""
+        # Find first queued script
+        queued_scripts = [
+            (path, data) for path, data in self.imported_scripts.items()
+            if data['status'] == 'queue'
+        ]
+        
+        if not queued_scripts:
+            QMessageBox.information(
+                self,
+                "No Queued Scripts",
+                "No scripts in queue to start."
+            )
+            return
+        
+        # Check if any script is already running
+        has_running = any(
+            data['status'] == 'running'
+            for data in self.imported_scripts.values()
+        )
+        
+        if has_running:
+            QMessageBox.warning(
+                self,
+                "Script Already Running",
+                "Cannot start queue while a script is already running.\n\n"
+                "Please wait for the current script to complete or use 'End All Workers' to stop it."
+            )
+            return
+        
+        # Start first queued script
+        script_path, script_data = queued_scripts[0]
+        project_id = script_data['project_id']
+        
+        # Get project
+        project = self.project_manager.get_project_by_id(project_id)
+        if not project:
+            QMessageBox.warning(
+                self,
+                "Project Not Found",
+                f"Project '{script_data['project_name']}' not found."
+            )
+            return
+        
+        # Update status to running
+        self.imported_scripts[script_path]['status'] = 'running'
+        self.refresh_scripts_table()
+        
+        # Start workflow
+        try:
+            if not AUTO_WORKFLOW_AVAILABLE or not self.orchestrator:
+                QMessageBox.warning(
+                    self,
+                    "Workflow Not Available",
+                    "Auto workflow module is not available."
+                )
+                return
+            
+            # Connect to workflow signals to update status
+            if not hasattr(self, '_workflow_connected'):
+                self.orchestrator.workflow_complete.connect(self._on_workflow_complete)
+                self.orchestrator.workflow_error.connect(self._on_workflow_error)
+                self._workflow_connected = True
+            
+            # Store current script path for status updates
+            self._current_running_script = script_path
+            
+            # Start workflow
+            self.orchestrator.start_workflow(project, script_path)
+            
+        except Exception as e:
+            # Revert status on error
+            self.imported_scripts[script_path]['status'] = 'queue'
+            self.refresh_scripts_table()
+            QMessageBox.critical(
+                self,
+                "Workflow Error",
+                f"Failed to start workflow:\n\n{e}"
+            )
+    
+    def _on_workflow_complete(self):
+        """Handle workflow completion - update script status"""
+        if hasattr(self, '_current_running_script'):
+            script_path = self._current_running_script
+            if script_path in self.imported_scripts:
+                self.imported_scripts[script_path]['status'] = 'completed'
+                self.refresh_scripts_table()
+                delattr(self, '_current_running_script')
+                
+                # Auto-start next queued script if any
+                QTimer.singleShot(1000, self._auto_start_next_script)
+    
+    def _on_workflow_error(self, error_msg: str):
+        """Handle workflow error - revert script status to queue"""
+        if hasattr(self, '_current_running_script'):
+            script_path = self._current_running_script
+            if script_path in self.imported_scripts:
+                self.imported_scripts[script_path]['status'] = 'queue'
+                self.refresh_scripts_table()
+                delattr(self, '_current_running_script')
+    
+    def _auto_start_next_script(self):
+        """Automatically start next queued script if available"""
+        queued_scripts = [
+            (path, data) for path, data in self.imported_scripts.items()
+            if data['status'] == 'queue'
+        ]
+        
+        if queued_scripts:
+            self.on_start_queue()
+    
+    def on_end_all_workers(self):
+        """Stop all running workers and clear queue"""
+        reply = QMessageBox.question(
+            self,
+            "End All Workers?",
+            "This will stop ALL running workers in:\n"
+            "• Voice generation (ElevenLabs)\n"
+            "• Image generation\n"
+            "• Video generation\n\n"
+            "Are you sure?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        # Stop voice generation
+        if ELEVENLABS_AVAILABLE and hasattr(self, 'elevenlabs_widget') and self.elevenlabs_widget:
+            try:
+                if hasattr(self.elevenlabs_widget, 'stop_generation'):
+                    self.elevenlabs_widget.stop_generation()
+                    print("[END ALL] Stopped voice generation")
+            except Exception as e:
+                print(f"[END ALL] Error stopping voice: {e}")
+        
+        # Stop image generation
+        if hasattr(self, 'image_generator_widget') and self.image_generator_widget:
+            try:
+                if hasattr(self.image_generator_widget, 'cancel_btn'):
+                    if self.image_generator_widget.cancel_btn.isEnabled():
+                        self.image_generator_widget.cancel_btn.click()
+                        print("[END ALL] Stopped image generation")
+            except Exception as e:
+                print(f"[END ALL] Error stopping images: {e}")
+        
+        # Stop video generation (image-to-video)
+        if hasattr(self, 'img_running_jobs'):
+            self.img_running_jobs = 0
+            self.img_stop_flag["stop"] = True
+            print("[END ALL] Stopped video generation")
+        
+        # Reset all queued scripts to queue status
+        for script_path, script_data in self.imported_scripts.items():
+            if script_data['status'] == 'running':
+                script_data['status'] = 'queue'
+        
+        # Clear current running script
+        if hasattr(self, '_current_running_script'):
+            delattr(self, '_current_running_script')
+        
+        self.refresh_scripts_table()
+        
+        QMessageBox.information(
+            self,
+            "All Workers Stopped",
+            "✅ All workers have been stopped.\n"
+            "All running scripts have been reset to queue status."
         )
 
     def setup_image2video_tab(self):
@@ -7458,65 +7817,204 @@ class MainWindow(QMainWindow):
                 w._cb.setChecked(False)
 
     def _img_regenerate_row(self, row: int):
-        """Regenerate video for a specific row"""
-        if not (0 <= row < len(self.image_prompts)):
-            return
+        """Regenerate video for a specific row - with crash protection"""
+        try:
+            # Validate row index
+            if not hasattr(self, 'image_prompts') or not self.image_prompts:
+                QMessageBox.warning(self, "Error", "Image prompts list is not available.")
+                return
+            
+            if not (0 <= row < len(self.image_prompts)):
+                QMessageBox.warning(self, "Error", f"Invalid row index: {row}")
+                return
+            
+            # Check if job is currently running
+            if not hasattr(self, 'img_active_rows'):
+                self.img_active_rows = set()
+            
+            if row in self.img_active_rows:
+                QMessageBox.warning(self, "Busy", "Job đang chạy. Hãy dừng trước khi regenerate.")
+                return
+            
+            ipr = self.image_prompts[row]
+            
+            # Validate ipr object
+            if not ipr:
+                QMessageBox.warning(self, "Error", f"Row {row} data is invalid.")
+                return
+            
+            # Check for LIVE account
+            if not hasattr(self, 'accounts') or not self.accounts:
+                QMessageBox.warning(self, "No account", "Không có tài khoản.")
+                return
+            
+            live = [a for a in self.accounts if hasattr(a, 'status') and a.status.lower() == "live"]
+            if not live:
+                QMessageBox.warning(self, "No account", "Không có tài khoản LIVE.")
+                return
+            
+            if not hasattr(live[0], 'path') or not live[0].path:
+                QMessageBox.warning(self, "Error", "Account path is invalid.")
+                return
+            
+            cookie_path = live[0].path
+            
+            # Validate output directory
+            if not hasattr(self, 'edit_outdir'):
+                QMessageBox.warning(self, "Error", "Output directory widget not found.")
+                return
+            
+            out_dir_text = self.edit_outdir.text() if hasattr(self.edit_outdir, 'text') else ""
+            out_dir = Path(out_dir_text or str(APP_DIR / "outputs"))
+            
+            # Validate model and outputs
+            try:
+                model = self.current_model()
+                outputs = self.current_outputs()
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to get model/outputs: {e}")
+                return
+            
+            # Validate start_image
+            if not hasattr(ipr, 'start_image') or not ipr.start_image:
+                QMessageBox.warning(self, "Error", "Start image is not set for this row.")
+                return
+            
+            if not os.path.exists(ipr.start_image):
+                QMessageBox.warning(self, "Error", f"Start image file not found: {ipr.start_image}")
+                return
+            
+            # Validate prompt
+            if not hasattr(ipr, 'prompt') or not ipr.prompt:
+                QMessageBox.warning(self, "Error", "Prompt is empty for this row.")
+                return
+            
+            # Reset status and clear old video
+            try:
+                ipr.status = "Queued"
+                ipr.video = ""
+            except Exception as e:
+                print(f"[REGENERATE] Warning: Failed to reset status: {e}")
+            
+            # Update UI safely
+            try:
+                if hasattr(self, '_ensure_img_progress_cell'):
+                    sp = self._ensure_img_progress_cell(row)
+                    if sp and hasattr(sp, 'set_progress'):
+                        sp.set_progress(0, "Queued")
+            except Exception as e:
+                print(f"[REGENERATE] Warning: Failed to update progress cell: {e}")
+            
+            # Clear video cell safely
+            try:
+                if hasattr(self, 'tbl_img') and self.tbl_img:
+                    if row < self.tbl_img.rowCount():
+                        self.tbl_img.setItem(row, 5, QTableWidgetItem(""))
+                        if self.tbl_img.columnCount() > 6:
+                            self.tbl_img.setItem(row, 6, QTableWidgetItem(""))
+            except Exception as e:
+                print(f"[REGENERATE] Warning: Failed to clear video cell: {e}")
+            
+            # Generate new name base
+            try:
+                prompt_text = ipr.prompt if hasattr(ipr, 'prompt') else f"row_{row}"
+                name_base = f"{row+1:03d}_{_slugify(prompt_text, 28)}"
+            except Exception as e:
+                print(f"[REGENERATE] Warning: Failed to generate name base: {e}")
+                name_base = f"{row+1:03d}_regenerate"
+            
+            # Validate timeout and retries
+            try:
+                timeout = self.current_img_timeout() if hasattr(self, 'current_img_timeout') else 300
+                retries = self.current_retries() if hasattr(self, 'current_retries') else 1
+            except Exception as e:
+                print(f"[REGENERATE] Warning: Failed to get timeout/retries: {e}")
+                timeout = 300
+                retries = 1
+            
+            # Create and start worker
+            try:
+                worker = ImageVideoWorker(
+                    row, cookie_path, ipr.start_image,
+                    ipr.prompt, model, outputs, out_dir, name_base,
+                    timeout=timeout,
+                    retries=retries
+                )
+                
+                if not worker or not hasattr(worker, 'signals'):
+                    QMessageBox.warning(self, "Error", "Failed to create worker.")
+                    return
+                
+                # Connect signals safely
+                if hasattr(worker.signals, 'progress') and hasattr(self, '_on_img_progress'):
+                    worker.signals.progress.connect(self._on_img_progress)
+                if hasattr(worker.signals, 'done') and hasattr(self, '_on_img_done'):
+                    worker.signals.done.connect(self._on_img_done)
+                if hasattr(worker.signals, 'finished') and hasattr(self, '_on_img_finished'):
+                    worker.signals.finished.connect(self._on_img_finished)
+                
+                # Update job counters safely
+                if not hasattr(self, 'img_running_jobs'):
+                    self.img_running_jobs = 0
+                self.img_running_jobs += 1
+                
+                if not hasattr(self, 'img_active_rows'):
+                    self.img_active_rows = set()
+                self.img_active_rows.add(row)
+                
+                # Start worker
+                if hasattr(self, 'thread_pool') and self.thread_pool:
+                    self.thread_pool.start(worker)
+                else:
+                    QMessageBox.warning(self, "Error", "Thread pool not available.")
+                    self.img_running_jobs -= 1
+                    self.img_active_rows.discard(row)
+                    return
+                
+                # Update UI state safely
+                try:
+                    if hasattr(self, 'btn_img_generate'):
+                        self.btn_img_generate.setEnabled(False)
+                    if hasattr(self, 'btn_img_stop'):
+                        self.btn_img_stop.setEnabled(True)
+                except Exception as e:
+                    print(f"[REGENERATE] Warning: Failed to update UI buttons: {e}")
+                
+                print(f"[REGENERATE] Started regeneration for row {row}")
+                
+            except Exception as e:
+                # Revert counters on error
+                if hasattr(self, 'img_running_jobs'):
+                    self.img_running_jobs = max(0, self.img_running_jobs - 1)
+                if hasattr(self, 'img_active_rows'):
+                    self.img_active_rows.discard(row)
+                
+                error_msg = str(e)
+                print(f"[REGENERATE] Error creating worker: {error_msg}")
+                import traceback
+                traceback.print_exc()
+                QMessageBox.critical(
+                    self,
+                    "Regenerate Error",
+                    f"Failed to regenerate row {row}:\n\n{error_msg}\n\n"
+                    f"Please check:\n"
+                    f"• Account is valid\n"
+                    f"• Start image exists\n"
+                    f"• Model settings are correct"
+                )
         
-        # Check if job is currently running
-        if row in self.img_active_rows:
-            QMessageBox.warning(self, "Busy", "Job đang chạy. Hãy dừng trước khi regenerate.")
-            return
-        
-        ipr = self.image_prompts[row]
-        
-        # Check for LIVE account
-        live = [a for a in self.accounts if a.status.lower()=="live"]
-        if not live:
-            QMessageBox.warning(self, "No account", "Không có tài khoản LIVE.")
-            return
-        
-        cookie_path = live[0].path
-        out_dir = Path(self.edit_outdir.text() or str(APP_DIR / "outputs"))
-        model = self.current_model()
-        outputs = self.current_outputs()
-        
-        # Reset status and clear old video
-        ipr.status = "Queued"
-        ipr.video = ""
-        
-        # Update UI
-        sp = self._ensure_img_progress_cell(row)
-        sp.set_progress(0, "Queued")
-        
-        # Clear video cell
-        self.tbl_img.setItem(row, 5, QTableWidgetItem(""))
-        self.tbl_img.setItem(row, 6, QTableWidgetItem(""))
-        
-        # Generate new name base
-        name_base = f"{row+1:03d}_{_slugify(ipr.prompt, 28)}"
-        
-        # Create and start worker
-        worker = ImageVideoWorker(
-            row, cookie_path, ipr.start_image,
-            ipr.prompt, model, outputs, out_dir, name_base,
-            timeout=self.current_img_timeout(),
-            retries=self.current_retries()
-        )
-        
-        worker.signals.progress.connect(self._on_img_progress)
-        worker.signals.done.connect(self._on_img_done)
-        worker.signals.finished.connect(self._on_img_finished)
-        
-        self.img_running_jobs += 1
-        self.img_active_rows.add(row)
-        self.thread_pool.start(worker)
-        
-        # Update UI state
-        if self.img_running_jobs > 0:
-            self.btn_img_generate.setEnabled(False)
-            self.btn_img_stop.setEnabled(True)
-        
-        print(f"[REGENERATE] Started regeneration for row {row}")
+        except Exception as e:
+            # Catch-all for any unexpected errors
+            error_msg = str(e)
+            print(f"[REGENERATE] Unexpected error: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(
+                self,
+                "Unexpected Error",
+                f"An unexpected error occurred while regenerating row {row}:\n\n{error_msg}\n\n"
+                f"The application will continue running."
+            )
     
     def _delete_img_row(self, row: int):
         if not (0 <= row < len(self.image_prompts)):
