@@ -77,3 +77,4 @@ const numStars = 40; // Thay vì 80
 
 
 
+
