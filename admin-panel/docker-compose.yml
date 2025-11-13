@@ -7,16 +7,16 @@ services:
     container_name: admin-panel-db
     environment:
       - ACCEPT_EULA=Y
-      - SA_PASSWORD=YourPassword123!
+      - SA_PASSWORD=${DB_PASSWORD:-YourPassword123!}
       - MSSQL_PID=Express
     ports:
-      - "1433:1433"
+      - "${DB_PORT:-1433}:1433"
     volumes:
       - sqlserver_data:/var/opt/mssql
     networks:
       - admin-panel-network
     healthcheck:
-      test: /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P YourPassword123! -Q "SELECT 1" || exit 1
+      test: /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P ${DB_PASSWORD:-YourPassword123!} -Q "SELECT 1" || exit 1
       interval: 10s
       timeout: 3s
       retries: 10
@@ -28,17 +28,20 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: admin-panel-app
+    env_file:
+      - .env
     environment:
-      - DB_USER=sa
-      - DB_PASSWORD=YourPassword123!
+      - DB_USER=${DB_USER:-sa}
+      - DB_PASSWORD=${DB_PASSWORD:-YourPassword123!}
       - DB_SERVER=sqlserver
-      - DB_NAME=WorkFlowAdmin
-      - DB_ENCRYPT=false
-      - DB_TRUST_CERT=true
-      - JWT_SECRET=your-super-secret-jwt-key-change-in-production
-      - NODE_ENV=production
+      - DB_PORT=${DB_PORT:-1433}
+      - DB_NAME=${DB_NAME:-WorkFlowAdmin}
+      - DB_ENCRYPT=${DB_ENCRYPT:-false}
+      - DB_TRUST_CERT=${DB_TRUST_CERT:-true}
+      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
+      - NODE_ENV=${NODE_ENV:-production}
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:3000"
     depends_on:
       sqlserver:
         condition: service_healthy
