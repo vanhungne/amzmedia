@@ -10,6 +10,8 @@ import {
   addError 
 } from '@/lib/progressTracking';
 import { getDb } from '@/lib/db';
+import sql from 'mssql';
+import { parallelLimit, chunk } from '@/lib/performance';
 
 /**
  * POST /api/elevenlabs/bulk-import-with-progress
@@ -71,7 +73,7 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * Process keys in background
+ * Process keys in background with parallel processing
  */
 async function processKeysInBackground(
   operationId: string,
@@ -80,63 +82,133 @@ async function processKeysInBackground(
   created_by: number
 ) {
   const pool = await getDb();
-  let successCount = 0;
-  let errorCount = 0;
+  const processedKeys: string[] = [];
+  const progressLock = { count: 0 };
+
+  // Process keys in parallel (10 concurrent operations)
+  const CONCURRENT_LIMIT = 10;
+
+  // Helper to update progress atomically
+  const updateProgressSafe = () => {
+    progressLock.count++;
+    updateProgress(
+      operationId,
+      progressLock.count,
+      `Đang xử lý... ${progressLock.count}/${keys.length} keys`
+    );
+  };
 
   try {
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      
-      try {
-        // Update progress
-        updateProgress(
-          operationId,
-          i + 1,
-          `Đang import key ${i + 1}/${keys.length}: ${key.substring(0, 10)}...`
-        );
+    // Process each key in parallel with limit
+    const results = await parallelLimit(
+      keys.map((key, index) => ({ key, index })),
+      async ({ key, index }) => {
+        try {
+          // Check if key already exists
+          const existing = await pool.request()
+            .input('api_key', sql.NVarChar(500), key)
+            .query('SELECT id FROM elevenlabs_keys WHERE api_key = @api_key');
 
-        // Check if key already exists
-        const existing = await pool.request()
-          .input('api_key', key)
-          .query('SELECT id FROM elevenlabs_keys WHERE api_key = @api_key');
+          if (existing.recordset.length > 0) {
+            addError(operationId, key.substring(0, 10), 'Key đã tồn tại');
+            updateProgressSafe();
+            return { success: false, key, error: 'Key đã tồn tại' };
+          }
 
-        if (existing.recordset.length > 0) {
-          addError(operationId, key.substring(0, 10), 'Key đã tồn tại');
-          errorCount++;
-          continue;
-        }
-
-        // Insert key
-        await pool.request()
-          .input('api_key', key)
-          .input('assigned_user_id', assigned_user_id || null)
-          .input('status', 'active')
-          .input('created_by', created_by)
-          .query(`
+          // Insert key
+          const insertRequest = pool.request()
+            .input('api_key', sql.NVarChar(500), key)
+            .input('status', sql.NVarChar(20), 'active')
+            .input('created_by', sql.Int, created_by);
+          
+          if (assigned_user_id) {
+            insertRequest.input('assigned_user_id', sql.Int, assigned_user_id);
+          } else {
+            insertRequest.input('assigned_user_id', sql.Int, null);
+          }
+          
+          const insertResult = await insertRequest.query(`
             INSERT INTO elevenlabs_keys 
             (api_key, assigned_user_id, status, created_by, created_at, updated_at)
             VALUES 
             (@api_key, @assigned_user_id, @status, @created_by, GETDATE(), GETDATE())
           `);
 
-        successCount++;
+          // Verify insert was successful
+          if (insertResult.rowsAffected[0] > 0) {
+            processedKeys.push(key);
+            updateProgressSafe();
+            return { success: true, key };
+          } else {
+            throw new Error('Insert failed - no rows affected');
+          }
 
-        // Add small delay để tránh overwhelm database
-        if (i % 10 === 0) {
-          await new Promise(resolve => setTimeout(resolve, 100));
+        } catch (error: any) {
+          console.error(`Error importing key ${key}:`, error);
+          addError(operationId, key.substring(0, 10), error.message);
+          updateProgressSafe();
+          return { success: false, key, error: error.message };
         }
+      },
+      CONCURRENT_LIMIT
+    );
 
-      } catch (error: any) {
-        console.error(`Error importing key ${key}:`, error);
-        addError(operationId, key.substring(0, 10), error.message);
-        errorCount++;
+    // Count results after all operations complete
+    const successCount = results.filter(r => r?.success).length;
+    const errorCount = results.filter(r => !r?.success).length;
+
+    // Final progress update
+    updateProgress(
+      operationId,
+      keys.length,
+      `Đang xác minh... Đã xử lý ${keys.length}/${keys.length} keys (Thành công: ${successCount}, Lỗi: ${errorCount})`
+    );
+
+    // Verification step: Verify all successful keys were actually inserted
+    let verifiedCount = successCount;
+    if (processedKeys.length > 0) {
+      try {
+        // Build parameterized query for verification
+        const verifyRequest = pool.request();
+        const placeholders: string[] = [];
+        processedKeys.forEach((k, idx) => {
+          const paramName = `key${idx}`;
+          verifyRequest.input(paramName, sql.NVarChar(500), k);
+          placeholders.push(`@${paramName}`);
+        });
+        
+        const verifyResult = await verifyRequest.query(`
+          SELECT COUNT(*) as count 
+          FROM elevenlabs_keys 
+          WHERE api_key IN (${placeholders.join(', ')})
+        `);
+        
+        verifiedCount = verifyResult.recordset[0]?.count || 0;
+        
+        if (verifiedCount !== successCount) {
+          console.warn(`[Bulk Import] Verification mismatch: Expected ${successCount}, found ${verifiedCount}`);
+        }
+      } catch (verifyError) {
+        console.error('Verification error (non-critical):', verifyError);
+        // Don't fail the operation if verification fails
+        verifiedCount = successCount; // Assume all were successful
       }
     }
 
-    // Complete operation
+    // Final progress update before completion
+    updateProgress(
+      operationId,
+      keys.length,
+      `Đang hoàn tất... Đã xử lý ${keys.length}/${keys.length} keys`
+    );
+
+    // Small delay to ensure all DB operations are committed
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    // Complete operation only after all items processed and verified
     completeOperation(
       operationId,
-      `✅ Import hoàn thành! Thành công: ${successCount}, Lỗi: ${errorCount}`
+      `✅ Import hoàn thành! Thành công: ${successCount}${verifiedCount !== successCount ? ` (Đã xác minh: ${verifiedCount})` : ''}, Lỗi: ${errorCount}`
     );
 
   } catch (error: any) {

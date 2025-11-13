@@ -10,6 +10,7 @@ import {
   failOperation,
   addError
 } from '@/lib/progressTracking';
+import { parallelLimit } from '@/lib/performance';
 
 /**
  * POST /api/elevenlabs/bulk-assign-with-progress
@@ -119,83 +120,140 @@ async function processAssignmentInBackground(
   username: string
 ) {
   const db = await getDb();
-  let successCount = 0;
-  let skipCount = 0;
+  const assignedKeyIds: number[] = [];
+  const progressLock = { count: 0 };
+
+  // Process keys in parallel (10 concurrent operations)
+  const CONCURRENT_LIMIT = 10;
+
+  // Helper to update progress atomically
+  const updateProgressSafe = () => {
+    progressLock.count++;
+    updateProgress(
+      operationId,
+      progressLock.count,
+      `Đang assign... ${progressLock.count}/${keyIds.length} keys cho ${username}`
+    );
+  };
 
   try {
-    for (let i = 0; i < keyIds.length; i++) {
-      const keyId = keyIds[i];
-      
+    // Process each key in parallel with limit
+    const results = await parallelLimit(
+      keyIds.map((keyId, index) => ({ keyId, index })),
+      async ({ keyId, index }) => {
+        try {
+          // Check key status
+          const keyCheck = await db.request()
+            .input('key_id', sql.Int, keyId)
+            .query(`
+              SELECT [id], [api_key], [credit_balance], [status], [assigned_user_id]
+              FROM [dbo].[elevenlabs_keys]
+              WHERE [id] = @key_id
+            `);
+          
+          if (keyCheck.recordset.length === 0) {
+            addError(operationId, `Key #${keyId}`, 'Key không tồn tại');
+            updateProgressSafe();
+            return { success: false, keyId, error: 'Key không tồn tại' };
+          }
+          
+          const key = keyCheck.recordset[0];
+          
+          // Skip if already assigned
+          if (key.assigned_user_id !== null) {
+            addError(operationId, key.api_key.substring(0, 10), 'Đã được assign');
+            updateProgressSafe();
+            return { success: false, keyId, error: 'Đã được assign' };
+          }
+          
+          // Check credit balance
+          if (key.credit_balance !== null && key.credit_balance <= 800) {
+            addError(
+              operationId, 
+              key.api_key.substring(0, 10), 
+              `Credit không đủ (${key.credit_balance})`
+            );
+            updateProgressSafe();
+            return { success: false, keyId, error: 'Credit không đủ' };
+          }
+          
+          // Assign the key
+          const updateResult = await db.request()
+            .input('key_id', sql.Int, keyId)
+            .input('user_id', sql.Int, userId)
+            .query(`
+              UPDATE [dbo].[elevenlabs_keys]
+              SET [assigned_user_id] = @user_id, [updated_at] = GETDATE()
+              WHERE [id] = @key_id AND [assigned_user_id] IS NULL
+            `);
+          
+          // Verify update was successful
+          if (updateResult.rowsAffected[0] > 0) {
+            assignedKeyIds.push(keyId);
+            updateProgressSafe();
+            return { success: true, keyId };
+          } else {
+            // Key might have been assigned by another process
+            addError(operationId, key.api_key.substring(0, 10), 'Không thể assign (có thể đã được assign)');
+            updateProgressSafe();
+            return { success: false, keyId, error: 'Không thể assign' };
+          }
+
+        } catch (error: any) {
+          console.error(`Error assigning key ${keyId}:`, error);
+          addError(operationId, `Key #${keyId}`, error.message);
+          updateProgressSafe();
+          return { success: false, keyId, error: error.message };
+        }
+      },
+      CONCURRENT_LIMIT
+    );
+
+    // Count results after all operations complete
+    const successCount = results.filter(r => r?.success).length;
+    const skipCount = results.filter(r => !r?.success).length;
+
+    // Verification step: Verify all assigned keys were actually updated
+    let verifiedCount = successCount;
+    if (assignedKeyIds.length > 0) {
       try {
-        // Update progress
-        updateProgress(
-          operationId,
-          i + 1,
-          `Đang assign key ${i + 1}/${keyIds.length} cho user ${username}...`
-        );
-
-        // Check key status
-        const keyCheck = await db.request()
-          .input('key_id', sql.Int, keyId)
-          .query(`
-            SELECT [id], [api_key], [credit_balance], [status], [assigned_user_id]
-            FROM [dbo].[elevenlabs_keys]
-            WHERE [id] = @key_id
-          `);
+        const verifyRequest = db.request();
+        verifyRequest.input('user_id', sql.Int, userId);
+        const placeholders: string[] = [];
+        assignedKeyIds.forEach((kid, idx) => {
+          const paramName = `keyId${idx}`;
+          verifyRequest.input(paramName, sql.Int, kid);
+          placeholders.push(`@${paramName}`);
+        });
         
-        if (keyCheck.recordset.length === 0) {
-          addError(operationId, `Key #${keyId}`, 'Key không tồn tại');
-          skipCount++;
-          continue;
+        const verifyResult = await verifyRequest.query(`
+          SELECT COUNT(*) as count 
+          FROM [dbo].[elevenlabs_keys]
+          WHERE [id] IN (${placeholders.join(', ')}) 
+            AND [assigned_user_id] = @user_id
+        `);
+        
+        verifiedCount = verifyResult.recordset[0]?.count || 0;
+        
+        if (verifiedCount !== successCount) {
+          console.warn(`[Bulk Assign] Verification mismatch: Expected ${successCount}, found ${verifiedCount}`);
         }
-        
-        const key = keyCheck.recordset[0];
-        
-        // Skip if already assigned
-        if (key.assigned_user_id !== null) {
-          addError(operationId, key.api_key.substring(0, 10), 'Đã được assign');
-          skipCount++;
-          continue;
-        }
-        
-        // Check credit balance
-        if (key.credit_balance !== null && key.credit_balance <= 800) {
-          addError(
-            operationId, 
-            key.api_key.substring(0, 10), 
-            `Credit không đủ (${key.credit_balance})`
-          );
-          skipCount++;
-          continue;
-        }
-        
-        // Assign the key
-        await db.request()
-          .input('key_id', sql.Int, keyId)
-          .input('user_id', sql.Int, userId)
-          .query(`
-            UPDATE [dbo].[elevenlabs_keys]
-            SET [assigned_user_id] = @user_id, [updated_at] = GETDATE()
-            WHERE [id] = @key_id
-          `);
-        
-        successCount++;
-
-        // Add small delay để tránh overwhelm database
-        if (i % 10 === 0 && i > 0) {
-          await new Promise(resolve => setTimeout(resolve, 100));
-        }
-
-      } catch (error: any) {
-        console.error(`Error assigning key ${keyId}:`, error);
-        addError(operationId, `Key #${keyId}`, error.message);
-        skipCount++;
+      } catch (verifyError) {
+        console.error('Verification error (non-critical):', verifyError);
+        verifiedCount = successCount;
       }
     }
 
-    // Update user's total_keys_received
+    // Final progress update
+    updateProgress(
+      operationId,
+      keyIds.length,
+      `Đang xác minh... Đã xử lý ${keyIds.length}/${keyIds.length} keys (Thành công: ${successCount}, Bỏ qua: ${skipCount})`
+    );
+
+    // Update user's total_keys_received - ensure this completes
     if (successCount > 0) {
-      await db.request()
+      const userUpdateResult = await db.request()
         .input('user_id', sql.Int, userId)
         .input('count', sql.Int, successCount)
         .query(`
@@ -204,12 +262,26 @@ async function processAssignmentInBackground(
               [updated_at] = GETDATE()
           WHERE [id] = @user_id
         `);
+      
+      if (userUpdateResult.rowsAffected[0] === 0) {
+        console.warn(`[Bulk Assign] Failed to update user stats for user ${userId}`);
+      }
     }
 
-    // Complete operation
+    // Final progress update before completion
+    updateProgress(
+      operationId,
+      keyIds.length,
+      `Đang hoàn tất... Đã xử lý ${keyIds.length}/${keyIds.length} keys`
+    );
+
+    // Small delay to ensure all DB operations are committed
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    // Complete operation only after all items processed and verified
     completeOperation(
       operationId,
-      `✅ Hoàn thành! Đã assign ${successCount} keys cho ${username}. ${skipCount > 0 ? `Bỏ qua ${skipCount} keys.` : ''}`
+      `✅ Hoàn thành! Đã assign ${successCount}${verifiedCount !== successCount ? ` (Đã xác minh: ${verifiedCount})` : ''} keys cho ${username}. ${skipCount > 0 ? `Bỏ qua ${skipCount} keys.` : ''}`
     );
 
   } catch (error: any) {
@@ -219,6 +291,9 @@ async function processAssignmentInBackground(
 }
 
 export const POST = requireAdmin(bulkAssignKeysWithProgress);
+
+
+
 
 
 
