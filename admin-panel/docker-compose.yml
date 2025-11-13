@@ -1,27 +1,4 @@
-version: '3.8'
-
 services:
-  # SQL Server Database
-  sqlserver:
-    image: mcr.microsoft.com/mssql/server:2022-latest
-    container_name: admin-panel-db
-    environment:
-      - ACCEPT_EULA=Y
-      - SA_PASSWORD=${DB_PASSWORD:-YourPassword123!}
-      - MSSQL_PID=Express
-    ports:
-      - "${DB_PORT:-1433}:1433"
-    volumes:
-      - sqlserver_data:/var/opt/mssql
-    networks:
-      - admin-panel-network
-    healthcheck:
-      test: /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P ${DB_PASSWORD:-YourPassword123!} -Q "SELECT 1" || exit 1
-      interval: 10s
-      timeout: 3s
-      retries: 10
-      start_period: 30s
-
   # Admin Panel Next.js Application
   admin-panel:
     build:
@@ -33,7 +10,7 @@ services:
     environment:
       - DB_USER=${DB_USER:-sa}
       - DB_PASSWORD=${DB_PASSWORD:-YourPassword123!}
-      - DB_SERVER=sqlserver
+      - DB_SERVER=host.docker.internal
       - DB_PORT=${DB_PORT:-1433}
       - DB_NAME=${DB_NAME:-WorkFlowAdmin}
       - DB_ENCRYPT=${DB_ENCRYPT:-false}
@@ -42,16 +19,11 @@ services:
       - NODE_ENV=${NODE_ENV:-production}
     ports:
       - "${PORT:-3000}:3000"
-    depends_on:
-      sqlserver:
-        condition: service_healthy
     networks:
       - admin-panel-network
     restart: unless-stopped
-
-volumes:
-  sqlserver_data:
-    driver: local
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 networks:
   admin-panel-network:
